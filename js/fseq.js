@@ -174,6 +174,26 @@ export function effectiveStepTime(stepTime, { convert50to20 = false } = {}) {
 }
 
 /**
+ * Source frames that start 10ms late after 50→20 floor mapping
+ * (`srcIndex = floor((i * 20) / 50)`). Odd-indexed source frames (1, 3, 5, …)
+ * have ideal starts at 50, 150, 250, … which sit between 20ms ticks, so they
+ * appear 10ms later. Even-indexed frames start on-grid.
+ */
+export function stepConvertShiftStats(frameCount) {
+  const n = Number(frameCount);
+  const total = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  return { shifted: Math.floor(total / 2), total };
+}
+
+function attachStepConvertShiftNote(result, header, convert50to20) {
+  if (!result || result.kind !== "include" || !convert50to20 || header?.stepTime !== SKIP_STEP_MS) {
+    return result;
+  }
+  const { shifted, total } = stepConvertShiftStats(header.frameCount);
+  return { ...result, shiftNote: `${shifted}/${total} frames start 10ms late` };
+}
+
+/**
  * CLI include/skip rules from lightshow-joiner.py:
  * skip 50ms, skip 200ch, keep 48ch / 20ms as the default compatible set.
  * When upgrade48to200 is on, 48ch/20ms and 200ch/20ms are both include-eligible
@@ -195,23 +215,27 @@ export function compatibilityFor(header, { upgrade48to200 = false, convert50to20
   const stepNote =
     header.stepTime === SKIP_STEP_MS && convert50to20 ? "50ms → 20ms" : `${header.stepTime}ms`;
 
+  let result;
   if (header.channelCount === SKIP_CHANNELS && effectiveStepTime(header.stepTime, { convert50to20 }) === DEFAULT_STEP_MS) {
     if (upgrade48to200) {
-      return { include: true, kind: "include", note: `Include: 200ch / ${stepNote}` };
+      result = { include: true, kind: "include", note: `Include: 200ch / ${stepNote}` };
+    } else {
+      result = { include: false, kind: "skip", note: "Skip: 200 channels" };
     }
-    return { include: false, kind: "skip", note: "Skip: 200 channels" };
-  }
-  if (header.channelCount === DEFAULT_CHANNELS && effectiveStepTime(header.stepTime, { convert50to20 }) === DEFAULT_STEP_MS) {
+  } else if (header.channelCount === DEFAULT_CHANNELS && effectiveStepTime(header.stepTime, { convert50to20 }) === DEFAULT_STEP_MS) {
     if (upgrade48to200) {
-      return { include: true, kind: "include", note: `Include: 48ch / ${stepNote} → 200ch` };
+      result = { include: true, kind: "include", note: `Include: 48ch / ${stepNote} → 200ch` };
+    } else {
+      result = { include: true, kind: "include", note: `Include: 48ch / ${stepNote}` };
     }
-    return { include: true, kind: "include", note: `Include: 48ch / ${stepNote}` };
+  } else {
+    result = {
+      include: false,
+      kind: "skip",
+      note: `Skip: ${header.channelCount}ch / ${header.stepTime}ms (want 48ch / 20ms)`,
+    };
   }
-  return {
-    include: false,
-    kind: "skip",
-    note: `Skip: ${header.channelCount}ch / ${header.stepTime}ms (want 48ch / 20ms)`,
-  };
+  return attachStepConvertShiftNote(result, header, convert50to20);
 }
 
 export function isMissingPair(show) {
@@ -287,37 +311,44 @@ export function rowCompatibility(show, target, { upgrade48to200 = false, convert
   }
 
   const base = compatibilityFor(show.header, options);
+  let result;
   if (isSelectableForJoin(show, target, options)) {
-    if (base.kind === "include") return { ...base, include: true };
-    const stepNote =
-      show.header.stepTime === SKIP_STEP_MS && convert50to20
-        ? "50ms → 20ms"
-        : `${show.header.stepTime}ms`;
-    return {
-      include: true,
-      kind: "include",
-      note: `Can join: ${show.header.channelCount}ch / ${stepNote}`,
-    };
+    if (base.kind === "include") {
+      result = { ...base, include: true };
+    } else {
+      const stepNote =
+        show.header.stepTime === SKIP_STEP_MS && convert50to20
+          ? "50ms → 20ms"
+          : `${show.header.stepTime}ms`;
+      result = {
+        include: true,
+        kind: "include",
+        note: `Can join: ${show.header.channelCount}ch / ${stepNote}`,
+      };
+    }
+  } else if (show.header.compression !== 0) {
+    result = base;
+  } else if (show.header.stepTime === SKIP_STEP_MS && !convert50to20) {
+    result = base;
+  } else {
+    const showStep = effectiveStepTime(show.header.stepTime, options);
+    if (target && showStep !== target.stepTime) {
+      result = {
+        include: false,
+        kind: "skip",
+        note: `Skip: ${show.header.stepTime}ms vs ${target.stepTime}ms join target`,
+      };
+    } else if (target && !channelsMatchForJoin(show.header.channelCount, target.channelCount, upgrade48to200)) {
+      result = {
+        include: false,
+        kind: "skip",
+        note: `Skip: ${show.header.channelCount}ch vs ${target.channelCount}ch join target`,
+      };
+    } else {
+      result = { ...base, include: false };
+    }
   }
-
-  if (show.header.compression !== 0) return base;
-  if (show.header.stepTime === SKIP_STEP_MS && !convert50to20) return base;
-  const showStep = effectiveStepTime(show.header.stepTime, options);
-  if (target && showStep !== target.stepTime) {
-    return {
-      include: false,
-      kind: "skip",
-      note: `Skip: ${show.header.stepTime}ms vs ${target.stepTime}ms join target`,
-    };
-  }
-  if (target && !channelsMatchForJoin(show.header.channelCount, target.channelCount, upgrade48to200)) {
-    return {
-      include: false,
-      kind: "skip",
-      note: `Skip: ${show.header.channelCount}ch vs ${target.channelCount}ch join target`,
-    };
-  }
-  return { ...base, include: false };
+  return attachStepConvertShiftNote(result, show.header, convert50to20);
 }
 
 /**

@@ -15,6 +15,7 @@ import {
   convertStepFrames,
   convertFseqStepTime,
   convertedFrameCount,
+  stepConvertShiftStats,
   effectiveStepTime,
   isHardBlocked,
   isSelectableForJoin,
@@ -80,12 +81,14 @@ test("compatibility matches CLI include/skip rules", () => {
   });
   assert.equal(keep50.include, true);
   assert.match(keep50.note, /50ms → 20ms/);
+  assert.equal(keep50.shiftNote, "25/50 frames start 10ms late");
 
   const skip200at50 = compatibilityFor(parseFseqHeader(createSampleFseq({ channelCount: 200, stepTime: 50 })), {
     convert50to20: true,
   });
   assert.equal(skip200at50.include, false);
   assert.match(skip200at50.note, /200 channels/);
+  assert.equal(skip200at50.shiftNote, undefined);
 
   const keep200at50 = compatibilityFor(parseFseqHeader(createSampleFseq({ channelCount: 200, stepTime: 50 })), {
     convert50to20: true,
@@ -93,6 +96,21 @@ test("compatibility matches CLI include/skip rules", () => {
   });
   assert.equal(keep200at50.include, true);
   assert.match(keep200at50.note, /200ch \/ 50ms → 20ms/);
+  assert.equal(keep200at50.shiftNote, "25/50 frames start 10ms late");
+
+  assert.equal(keep.shiftNote, undefined);
+  assert.equal(skipStep.shiftNote, undefined);
+  assert.equal(keep48up.shiftNote, undefined);
+});
+
+test("stepConvertShiftStats counts odd-indexed source frames as 10ms late", () => {
+  assert.deepEqual(stepConvertShiftStats(2474), { shifted: 1237, total: 2474 });
+  assert.deepEqual(stepConvertShiftStats(40), { shifted: 20, total: 40 });
+  assert.deepEqual(stepConvertShiftStats(5), { shifted: 2, total: 5 });
+  assert.deepEqual(stepConvertShiftStats(1), { shifted: 0, total: 1 });
+  assert.deepEqual(stepConvertShiftStats(0), { shifted: 0, total: 0 });
+  assert.deepEqual(stepConvertShiftStats(-3), { shifted: 0, total: 0 });
+  assert.deepEqual(stepConvertShiftStats(Number.NaN), { shifted: 0, total: 0 });
 });
 
 function fakeShow({ channels = 48, stepTime = 20, include = false, audio = "wav", extra = {} } = {}) {
@@ -157,6 +175,13 @@ test("join target disables channel-mismatched checkboxes unless 48→200 upgrade
 
   const upgraded = rowCompatibility(show200, target, { upgrade48to200: true });
   assert.equal(upgraded.include, true);
+
+  const converted = rowCompatibility(show50, target, { convert50to20: true });
+  assert.equal(converted.include, true);
+  assert.match(converted.note, /50ms → 20ms/);
+  assert.equal(converted.shiftNote, "25/50 frames start 10ms late");
+  assert.equal(rowCompatibility(show48, target, { convert50to20: true }).shiftNote, undefined);
+  assert.equal(rowCompatibility(show50, target).shiftNote, undefined);
 });
 
 test("expandFrameChannels pads each frame with zeros", () => {

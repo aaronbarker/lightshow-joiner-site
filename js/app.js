@@ -385,7 +385,14 @@ function render() {
           <td class="num col-tight">${header ? header.stepTime : "—"}</td>
           <td class="num col-tight">${header ? formatDuration(durationMs(header)) : "—"}</td>
           <td class="col-tight"><span class="badge ${audioClass}">${escapeHtml(audioLabel)}</span></td>
-          <td class="compat-cell"><span class="badge ${compat.kind}">${escapeHtml(compat.note)}</span></td>
+          <td class="compat-cell">
+            <span class="badge ${compat.kind}">${escapeHtml(compat.note)}</span>
+            ${
+              compat.shiftNote
+                ? `<span class="compat-shift">${escapeHtml(compat.shiftNote)}</span>`
+                : ""
+            }
+          </td>
         </tr>
       `;
     })
