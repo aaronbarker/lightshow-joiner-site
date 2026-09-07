@@ -549,10 +549,8 @@ els.selectCompatible.addEventListener("click", () => {
 });
 els.upgrade48to200?.addEventListener("change", () => {
   state.upgrade48to200 = Boolean(els.upgrade48to200.checked);
-  if (state.upgrade48to200) {
-    for (const show of state.shows) {
-      if (defaultInclude(show, joinOptions())) show.include = true;
-    }
+  for (const show of state.shows) {
+    show.include = defaultInclude(show, joinOptions());
   }
   applyEligibility();
   render();
