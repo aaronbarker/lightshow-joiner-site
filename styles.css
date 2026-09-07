@@ -149,8 +149,8 @@ h1 {
 }
 
 .drop.is-over {
-  border-color: var(--accent);
-  background: var(--accent-soft);
+  border-color: var(--include);
+  background: rgba(61, 214, 140, 0.18);
   transform: translateY(-1px);
 }
 
