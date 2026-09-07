@@ -1,0 +1,10 @@
+{
+  "name": "lightshow-joiner-site",
+  "private": true,
+  "type": "module",
+  "description": "Browser-only Tesla lightshow joiner for GitHub Pages",
+  "scripts": {
+    "test": "node --test test/fseq.test.mjs",
+    "preview": "python3 -m http.server 8080"
+  }
+}

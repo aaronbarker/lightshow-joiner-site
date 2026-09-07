@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Tesla Lightshow Joiner</title>
+    <meta
+      name="description"
+      content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
+    />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="top">
+        <div>
+          <p class="eyebrow">Browser only</p>
+          <h1>Tesla Lightshow Joiner</h1>
+          <p class="lede">
+            Drop a folder of shows (or pick <code>.fseq</code> plus matching
+            <code>.mp3</code>/<code>.wav</code> files). Scan them like the Python CLI,
+            sort the table, then join compatible uncompressed V2 sequences.
+          </p>
+        </div>
+        <nav class="links">
+          <a href="https://github.com/aaronbarker/lightshow-joiner">Python CLI</a>
+          <a href="https://github.com/aaronbarker/lightshow-joiner-site">Site repo</a>
+        </nav>
+      </header>
+
+      <p class="privacy">
+        Files stay in this browser tab. There is no upload server — GitHub Pages
+        only hosts these static files.
+      </p>
+
+      <section
+        id="dropzone"
+        class="drop"
+        tabindex="0"
+        role="button"
+        aria-label="Drop Tesla lightshow files or click to choose files"
+      >
+        <p class="drop-title">Drop a folder or lightshow files</p>
+        <p class="drop-hint">
+          Accepts <strong>.fseq</strong> plus audio with the same basename.
+          Folder pick uses <code>webkitdirectory</code> where the browser supports it.
+        </p>
+        <div class="drop-actions">
+          <button type="button" id="pick-files">Choose files</button>
+          <button type="button" id="pick-folder">Choose folder</button>
+          <button type="button" id="load-samples">Load sample shows</button>
+        </div>
+      </section>
+
+      <input
+        id="file-input"
+        class="hidden-input"
+        type="file"
+        multiple
+        accept=".fseq,.mp3,.wav,audio/mpeg,audio/wav"
+      />
+      <input id="folder-input" class="hidden-input" type="file" webkitdirectory multiple />
+
+      <section id="results" class="panel" aria-live="polite">
+        <div class="toolbar">
+          <div id="stats" class="stats"></div>
+          <div class="drop-actions">
+            <button type="button" id="select-compatible">Select compatible</button>
+            <button type="button" id="clear-shows">Clear</button>
+          </div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Include</th>
+                <th scope="col" title="Drag to reorder join sequence">Order</th>
+                <th scope="col" class="sortable" data-sort="name" aria-sort="ascending">Name</th>
+                <th scope="col" class="sortable" data-sort="channels">Channels</th>
+                <th scope="col" class="sortable" data-sort="stepTime">Step (ms)</th>
+                <th scope="col" class="sortable" data-sort="frames">Frames</th>
+                <th scope="col" class="sortable" data-sort="duration">Duration</th>
+                <th scope="col" class="sortable" data-sort="audio">Audio</th>
+                <th scope="col" class="sortable" data-sort="compat">Compatibility</th>
+                <th scope="col" class="sortable" data-sort="valid">Validator</th>
+              </tr>
+            </thead>
+            <tbody id="show-rows"></tbody>
+          </table>
+        </div>
+
+        <div class="join-box">
+          <div class="join-row">
+            <label class="field">
+              Output name
+              <input id="output-name" type="text" value="joined" spellcheck="false" />
+            </label>
+            <button type="button" class="btn btn-primary" id="join-btn">
+              Join &amp; download .fseq
+            </button>
+          </div>
+          <p class="join-note">
+            Join follows the <strong>current table order</strong> of checked rows
+            (sort a column or drag the handle to reorder). Only uncompressed V2
+            files with the same channel count and step time can be concatenated —
+            the same rules as <code>joiner-fseq.py</code>.
+            <strong>Audio join is coming next</strong> (ffmpeg.wasm). Download the
+            FSEQ now and pair audio yourself, or use the Python CLI to concat MP3s.
+          </p>
+          <div id="join-status"></div>
+        </div>
+      </section>
+
+      <footer>
+        Companion to
+        <a href="https://github.com/aaronbarker/lightshow-joiner">aaronbarker/lightshow-joiner</a>.
+        Default include set is 48 channels / 20&nbsp;ms; 50&nbsp;ms and 200-channel
+        shows are skipped unless you check them and they still match each other.
+        Validation follows Tesla’s <code>validator.py</code> checks.
+      </footer>
+    </main>
+    <script type="module" src="./js/app.js"></script>
+  </body>
+</html>
