@@ -433,6 +433,20 @@ label.toggle small {
   line-height: 1.4;
 }
 
+.step-convert-warning {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--skip-soft);
+  color: #ffe0a8;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.step-convert-warning[hidden] {
+  display: none;
+}
+
 label.field {
   display: flex;
   flex-direction: column;

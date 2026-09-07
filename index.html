@@ -104,10 +104,23 @@
                 <small>Pad unused channels with zeros so 48-channel / 20ms shows can join 200-channel / 20ms shows. Does not convert 20ms ↔ 50ms.</small>
               </span>
             </label>
+            <label class="toggle" for="convert-50-to-20">
+              <input id="convert-50-to-20" type="checkbox" />
+              <span>
+                <strong>Convert 50ms → 20ms</strong>
+                <small>Experimental. Expands frames so wall-clock duration stays matched to the audio (every 2×50ms frames become 5×20ms). Does not convert 20ms → 50ms.</small>
+              </span>
+            </label>
             <button type="button" class="btn btn-primary" id="join-btn">
               Join &amp; download
             </button>
           </div>
+          <p id="step-convert-warning" class="step-convert-warning" hidden>
+            <strong>Experimental 50ms → 20ms:</strong>
+            Total length stays matched to the audio. Lights may look slightly less
+            tight to the beat, and local timing can stutter on a ~10&nbsp;ms scale.
+            That is not runaway drift if duration is preserved.
+          </p>
           <p class="combined-time" id="combined-time">
             <strong>Total time of combined output:</strong>
             <span id="combined-time-value">—</span>
@@ -117,7 +130,9 @@
             Join follows the <strong>current table order</strong> of checked rows
             (sort a column or drag the handle to reorder). Only uncompressed V2
             files with a matching pair (<code>.fseq</code> + audio) and the same
-            step time can be concatenated. Channel counts must match, or turn on
+            step time can be concatenated, or turn on
+            <strong>Convert 50ms → 20ms</strong> to expand 50ms frames onto a 20ms
+            grid. Channel counts must match, or turn on
             <strong>Upgrade 48ch → 200ch</strong> to pad 48-channel frames to 200.
             Missing-pair and incompatible rows stay unchecked and locked.
             A successful join downloads a <strong>.zip</strong> with the combined
@@ -132,9 +147,10 @@
         Companion to
         <a href="https://github.com/aaronbarker/lightshow-joiner">aaronbarker/lightshow-joiner</a>.
         Default include set is 48 channels / 20&nbsp;ms with a matching audio file.
-        50&nbsp;ms shows stay skipped (no step-time conversion). 200-channel / 20ms
-        shows join the default set only when <strong>Upgrade 48ch → 200ch</strong>
-        is on. Validation follows Tesla’s <code>validator.py</code> checks.
+        50&nbsp;ms shows stay skipped unless <strong>Convert 50ms → 20ms</strong>
+        (experimental) is on. 200-channel / 20ms shows join the default set only
+        when <strong>Upgrade 48ch → 200ch</strong> is on. Validation follows Tesla’s
+        <code>validator.py</code> checks.
       </footer>
     </main>
     <script type="module" src="./js/app.js"></script>

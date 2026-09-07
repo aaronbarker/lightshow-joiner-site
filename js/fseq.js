@@ -168,33 +168,44 @@ export function validateFseq(buffer) {
   };
 }
 
+export function effectiveStepTime(stepTime, { convert50to20 = false } = {}) {
+  if (convert50to20 && stepTime === SKIP_STEP_MS) return DEFAULT_STEP_MS;
+  return stepTime;
+}
+
 /**
  * CLI include/skip rules from lightshow-joiner.py:
  * skip 50ms, skip 200ch, keep 48ch / 20ms as the default compatible set.
  * When upgrade48to200 is on, 48ch/20ms and 200ch/20ms are both include-eligible
- * (48ch frames are padded to 200ch at join time). Step-time is never converted.
+ * (48ch frames are padded to 200ch at join time).
+ * When convert50to20 is on, 50ms shows are include-eligible as 20ms after
+ * frame expansion (never the reverse 20→50).
  */
-export function compatibilityFor(header, { upgrade48to200 = false } = {}) {
+export function compatibilityFor(header, { upgrade48to200 = false, convert50to20 = false } = {}) {
   if (!header) {
     return { include: false, kind: "error", note: "Could not read header" };
   }
   if (header.compression !== 0) {
     return { include: false, kind: "skip", note: "Skip: compressed (Tesla needs uncompressed V2)" };
   }
-  if (header.stepTime === SKIP_STEP_MS) {
+  if (header.stepTime === SKIP_STEP_MS && !convert50to20) {
     return { include: false, kind: "skip", note: "Skip: 50ms step time (no conversion)" };
   }
-  if (header.channelCount === SKIP_CHANNELS && header.stepTime === DEFAULT_STEP_MS) {
+
+  const stepNote =
+    header.stepTime === SKIP_STEP_MS && convert50to20 ? "50ms → 20ms" : `${header.stepTime}ms`;
+
+  if (header.channelCount === SKIP_CHANNELS && effectiveStepTime(header.stepTime, { convert50to20 }) === DEFAULT_STEP_MS) {
     if (upgrade48to200) {
-      return { include: true, kind: "include", note: "Include: 200ch / 20ms" };
+      return { include: true, kind: "include", note: `Include: 200ch / ${stepNote}` };
     }
     return { include: false, kind: "skip", note: "Skip: 200 channels" };
   }
-  if (header.channelCount === DEFAULT_CHANNELS && header.stepTime === DEFAULT_STEP_MS) {
+  if (header.channelCount === DEFAULT_CHANNELS && effectiveStepTime(header.stepTime, { convert50to20 }) === DEFAULT_STEP_MS) {
     if (upgrade48to200) {
-      return { include: true, kind: "include", note: "Include: 48ch / 20ms → 200ch" };
+      return { include: true, kind: "include", note: `Include: 48ch / ${stepNote} → 200ch` };
     }
-    return { include: true, kind: "include", note: "Include: 48ch / 20ms" };
+    return { include: true, kind: "include", note: `Include: 48ch / ${stepNote}` };
   }
   return {
     include: false,
@@ -209,25 +220,25 @@ export function isMissingPair(show) {
 
 /**
  * Shows that can never be merged: missing fseq/audio pair, unreadable,
- * compressed/invalid, or 50ms (step time is not converted).
+ * compressed/invalid, or 50ms when 50→20 conversion is off.
  */
-export function isHardBlocked(show) {
+export function isHardBlocked(show, { convert50to20 = false } = {}) {
   if (!show) return true;
   if (show.orphanAudio) return true;
   if (!show.header || show.error) return true;
   if (isMissingPair(show)) return true;
   if (show.header.compression !== 0) return true;
   if (show.validation && show.validation.ok === false) return true;
-  if (show.header.stepTime === SKIP_STEP_MS) return true;
+  if (show.header.stepTime === SKIP_STEP_MS && !convert50to20) return true;
   return false;
 }
 
-export function resolveJoinTarget(shows) {
+export function resolveJoinTarget(shows, { convert50to20 = false } = {}) {
   const included = (shows || []).filter((show) => show.include && show.header && !show.orphanAudio);
   if (!included.length) return null;
   return {
     channelCount: included[0].header.channelCount,
-    stepTime: included[0].header.stepTime,
+    stepTime: effectiveStepTime(included[0].header.stepTime, { convert50to20 }),
   };
 }
 
@@ -238,21 +249,23 @@ export function channelsMatchForJoin(showChannels, targetChannels, upgrade48to20
   return pair.has(DEFAULT_CHANNELS) && pair.has(SKIP_CHANNELS);
 }
 
-export function isSelectableForJoin(show, target, { upgrade48to200 = false } = {}) {
-  if (isHardBlocked(show)) return false;
+export function isSelectableForJoin(show, target, { upgrade48to200 = false, convert50to20 = false } = {}) {
+  if (isHardBlocked(show, { convert50to20 })) return false;
+  const step = effectiveStepTime(show.header.stepTime, { convert50to20 });
   if (!target) {
     return (
-      show.header.stepTime === DEFAULT_STEP_MS &&
+      step === DEFAULT_STEP_MS &&
       (show.header.channelCount === DEFAULT_CHANNELS || show.header.channelCount === SKIP_CHANNELS)
     );
   }
-  if (show.header.stepTime !== target.stepTime) return false;
+  if (step !== target.stepTime) return false;
   return channelsMatchForJoin(show.header.channelCount, target.channelCount, upgrade48to200);
 }
 
-export function defaultInclude(show, { upgrade48to200 = false } = {}) {
-  if (isHardBlocked(show)) return false;
-  return compatibilityFor(show.header, { upgrade48to200 }).include;
+export function defaultInclude(show, { upgrade48to200 = false, convert50to20 = false } = {}) {
+  const options = { upgrade48to200, convert50to20 };
+  if (isHardBlocked(show, options)) return false;
+  return compatibilityFor(show.header, options).include;
 }
 
 export function missingPairNote(show) {
@@ -261,7 +274,8 @@ export function missingPairNote(show) {
   return "";
 }
 
-export function rowCompatibility(show, target, { upgrade48to200 = false } = {}) {
+export function rowCompatibility(show, target, { upgrade48to200 = false, convert50to20 = false } = {}) {
+  const options = { upgrade48to200, convert50to20 };
   if (show?.orphanAudio) {
     return { include: false, kind: "error", note: "Missing .fseq pair" };
   }
@@ -272,19 +286,24 @@ export function rowCompatibility(show, target, { upgrade48to200 = false } = {}) 
     return { include: false, kind: "error", note: show?.error || "Could not read header" };
   }
 
-  const base = compatibilityFor(show.header, { upgrade48to200 });
-  if (isSelectableForJoin(show, target, { upgrade48to200 })) {
+  const base = compatibilityFor(show.header, options);
+  if (isSelectableForJoin(show, target, options)) {
     if (base.kind === "include") return { ...base, include: true };
+    const stepNote =
+      show.header.stepTime === SKIP_STEP_MS && convert50to20
+        ? "50ms → 20ms"
+        : `${show.header.stepTime}ms`;
     return {
       include: true,
       kind: "include",
-      note: `Can join: ${show.header.channelCount}ch / ${show.header.stepTime}ms`,
+      note: `Can join: ${show.header.channelCount}ch / ${stepNote}`,
     };
   }
 
   if (show.header.compression !== 0) return base;
-  if (show.header.stepTime === SKIP_STEP_MS) return base;
-  if (target && show.header.stepTime !== target.stepTime) {
+  if (show.header.stepTime === SKIP_STEP_MS && !convert50to20) return base;
+  const showStep = effectiveStepTime(show.header.stepTime, options);
+  if (target && showStep !== target.stepTime) {
     return {
       include: false,
       kind: "skip",
@@ -363,6 +382,79 @@ export function upgradeFseqChannels(buffer, toChannels = SKIP_CHANNELS) {
   return out.buffer;
 }
 
+/**
+ * How many 20ms frames a 50ms sequence becomes. Wall-clock duration is
+ * preserved to the nearest output step (even frame counts are exact).
+ */
+export function convertedFrameCount(frameCount, fromStep = SKIP_STEP_MS, toStep = DEFAULT_STEP_MS) {
+  return Math.round((frameCount * fromStep) / toStep);
+}
+
+/**
+ * Repeat 50ms frames onto a 20ms grid. Every two source frames (100ms) become
+ * five output frames (A,A,A,B,B). Does not convert 20→50.
+ */
+export function convertStepFrames(frameData, channelCount, frameCount, fromStep, toStep) {
+  if (fromStep === toStep) {
+    return frameData.subarray(0, channelCount * frameCount);
+  }
+  if (fromStep !== SKIP_STEP_MS || toStep !== DEFAULT_STEP_MS) {
+    throw new Error(`Can only convert ${SKIP_STEP_MS}ms → ${DEFAULT_STEP_MS}ms (got ${fromStep}→${toStep})`);
+  }
+  const expected = channelCount * frameCount;
+  if (frameData.byteLength < expected) {
+    throw new Error("Not enough frame data to convert step time");
+  }
+  const outFrames = convertedFrameCount(frameCount, fromStep, toStep);
+  const out = new Uint8Array(outFrames * channelCount);
+  for (let i = 0; i < outFrames; i += 1) {
+    const srcIndex = Math.min(frameCount - 1, Math.floor((i * toStep) / fromStep));
+    const srcOff = srcIndex * channelCount;
+    out.set(frameData.subarray(srcOff, srcOff + channelCount), i * channelCount);
+  }
+  return out;
+}
+
+/**
+ * Expand a 50ms FSEQ onto 20ms frames and rewrite step_time + frame_count.
+ * Already-20ms files are returned unchanged. Never converts 20→50.
+ */
+export function convertFseqStepTime(buffer, toStep = DEFAULT_STEP_MS) {
+  const header = parseFseqHeader(buffer);
+  if (header.stepTime === toStep) {
+    return buffer;
+  }
+  if (header.stepTime !== SKIP_STEP_MS || toStep !== DEFAULT_STEP_MS) {
+    throw new Error(
+      `Can only convert ${SKIP_STEP_MS}ms shows to ${DEFAULT_STEP_MS}ms (got ${header.stepTime}→${toStep})`
+    );
+  }
+  if (header.compression !== 0) {
+    throw new Error("Cannot convert a compressed FSEQ");
+  }
+
+  const expected = header.channelCount * header.frameCount;
+  const frameData = new Uint8Array(buffer, header.dataOffset);
+  if (frameData.byteLength < expected) {
+    throw new Error("Not enough frame data to convert step time");
+  }
+
+  const expanded = convertStepFrames(
+    frameData.subarray(0, expected),
+    header.channelCount,
+    header.frameCount,
+    header.stepTime,
+    toStep
+  );
+  const out = new Uint8Array(header.dataOffset + expanded.byteLength);
+  out.set(new Uint8Array(buffer, 0, header.dataOffset), 0);
+  out.set(expanded, header.dataOffset);
+  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  view.setUint32(14, convertedFrameCount(header.frameCount, header.stepTime, toStep), true);
+  view.setUint8(18, toStep);
+  return out.buffer;
+}
+
 function setUint64LE(view, offset, value) {
   const big = BigInt(value);
   const mask = 0xffffffffn;
@@ -370,18 +462,26 @@ function setUint64LE(view, offset, value) {
   view.setUint32(offset + 4, Number((big >> 32n) & mask), true);
 }
 
-export function joinFseqBuffers(buffers, { upgrade48to200 = false } = {}) {
+export function joinFseqBuffers(buffers, { upgrade48to200 = false, convert50to20 = false } = {}) {
   if (!buffers || buffers.length < 1) {
     throw new Error("Need at least one FSEQ file to join");
   }
 
   const prepared = buffers.map((buffer) => {
-    if (!upgrade48to200) return buffer;
-    const header = parseFseqHeader(buffer);
-    if (header.channelCount === DEFAULT_CHANNELS) {
-      return upgradeFseqChannels(buffer, SKIP_CHANNELS);
+    let next = buffer;
+    if (convert50to20) {
+      const header = parseFseqHeader(next);
+      if (header.stepTime === SKIP_STEP_MS) {
+        next = convertFseqStepTime(next, DEFAULT_STEP_MS);
+      }
     }
-    return buffer;
+    if (upgrade48to200) {
+      const header = parseFseqHeader(next);
+      if (header.channelCount === DEFAULT_CHANNELS) {
+        next = upgradeFseqChannels(next, SKIP_CHANNELS);
+      }
+    }
+    return next;
   });
 
   const parsed = prepared.map((buffer, index) => {

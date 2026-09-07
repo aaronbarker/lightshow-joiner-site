@@ -16,6 +16,7 @@ import {
   rowCompatibility,
   missingPairNote,
   isMissingPair,
+  effectiveStepTime,
 } from "./fseq.js";
 import { joinShowAudio, preloadFfmpeg } from "./audio-join.js";
 import { createZipStore } from "./zip.js";
@@ -29,6 +30,7 @@ const state = {
   sortDir: "asc",
   customOrder: false,
   upgrade48to200: false,
+  convert50to20: false,
 };
 
 const els = {
@@ -44,6 +46,8 @@ const els = {
   joinBtn: document.getElementById("join-btn"),
   outputName: document.getElementById("output-name"),
   upgrade48to200: document.getElementById("upgrade-48-to-200"),
+  convert50to20: document.getElementById("convert-50-to-20"),
+  stepConvertWarning: document.getElementById("step-convert-warning"),
   combinedTimeValue: document.getElementById("combined-time-value"),
   joinStatus: document.getElementById("join-status"),
   clearShows: document.getElementById("clear-shows"),
@@ -51,7 +55,7 @@ const els = {
 };
 
 function joinOptions() {
-  return { upgrade48to200: state.upgrade48to200 };
+  return { upgrade48to200: state.upgrade48to200, convert50to20: state.convert50to20 };
 }
 
 function fileKey(file) {
@@ -222,7 +226,7 @@ function sortShows() {
     if (key === "duration") return show.header ? durationMs(show.header) : -1;
     if (key === "audio") return show.audio.kind;
     if (key === "compat") {
-      return rowCompatibility(show, resolveJoinTarget(state.shows), joinOptions()).note.toLowerCase();
+      return rowCompatibility(show, resolveJoinTarget(state.shows, joinOptions()), joinOptions()).note.toLowerCase();
     }
     if (key === "valid") return show.validation.ok ? 1 : 0;
     return show.name.toLowerCase();
@@ -272,8 +276,8 @@ function displayShows() {
 }
 
 function applyEligibility({ selectCompatible = false } = {}) {
-  const target = resolveJoinTarget(state.shows);
   const options = joinOptions();
+  const target = resolveJoinTarget(state.shows, options);
   for (const show of state.shows) {
     const selectable = isSelectableForJoin(show, target, options);
     if (!selectable) {
@@ -292,11 +296,12 @@ function render() {
     els.rows.innerHTML = "";
     els.stats.innerHTML = "";
     updateCombinedTime([]);
+    updateStepConvertWarning();
     return;
   }
 
-  const target = resolveJoinTarget(state.shows);
   const options = joinOptions();
+  const target = resolveJoinTarget(state.shows, options);
   const included = includedShows();
   const pairErrors = rows.filter((show) => isMissingPair(show)).length;
   const skipped = rows.length - included.length;
@@ -367,7 +372,13 @@ function render() {
 
   els.joinBtn.disabled = included.length < 2;
   updateCombinedTime(included);
+  updateStepConvertWarning();
   bindRowEvents();
+}
+
+function updateStepConvertWarning() {
+  if (!els.stepConvertWarning) return;
+  els.stepConvertWarning.hidden = !state.convert50to20;
 }
 
 function updateCombinedTime(included = includedShows()) {
@@ -464,7 +475,8 @@ function fseqSummary(selected, joined, validation) {
     ? `Tesla validator checks passed (${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s).`
     : `Joined file failed validator: ${validation.errors.join("; ")}`;
   const upgradeNote = state.upgrade48to200 ? " 48→200 upgrade applied." : "";
-  return `${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote}`;
+  const convertNote = state.convert50to20 ? " 50→20 step conversion applied." : "";
+  return `${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote}${convertNote}`;
 }
 
 async function joinAndDownload() {
@@ -474,12 +486,13 @@ async function joinAndDownload() {
     return;
   }
 
-  const steps = new Set(selected.map((show) => show.header.stepTime));
+  const options = joinOptions();
+  const steps = new Set(selected.map((show) => effectiveStepTime(show.header.stepTime, options)));
   const channels = new Set(selected.map((show) => show.header.channelCount));
   const mixedChannels = channels.size > 1;
   if (steps.size > 1 || (mixedChannels && !state.upgrade48to200)) {
     setJoinStatus(
-      "Included shows must share the same step time, and the same channel count unless 48→200 upgrade is on.",
+      "Included shows must share the same step time (or enable 50→20 conversion), and the same channel count unless 48→200 upgrade is on.",
       "err"
     );
     return;
@@ -560,7 +573,7 @@ function loadSamples() {
   ];
   ingestFiles(files, { replace: true });
   setJoinStatus(
-    "Loaded in-browser sample shows (synthetic PSEQ bytes). Compatible 48ch / 20ms rows with audio are checked. Missing-pair rows are red and locked; 50ms and mismatched 200ch rows stay unchecked and disabled unless you turn on 48→200 upgrade.",
+    "Loaded in-browser sample shows (synthetic PSEQ bytes). Compatible 48ch / 20ms rows with audio are checked. Missing-pair rows are red and locked; 50ms rows stay skipped unless you turn on experimental 50→20 conversion; 200ch rows stay skipped unless 48→200 upgrade is on.",
     "info"
   );
 }
@@ -605,13 +618,21 @@ els.selectCompatible.addEventListener("click", () => {
   applyEligibility();
   render();
 });
-els.upgrade48to200?.addEventListener("change", () => {
-  state.upgrade48to200 = Boolean(els.upgrade48to200.checked);
+function applyJoinOptionChange() {
   for (const show of state.shows) {
     show.include = defaultInclude(show, joinOptions());
   }
   applyEligibility();
   render();
+}
+
+els.upgrade48to200?.addEventListener("change", () => {
+  state.upgrade48to200 = Boolean(els.upgrade48to200.checked);
+  applyJoinOptionChange();
+});
+els.convert50to20?.addEventListener("change", () => {
+  state.convert50to20 = Boolean(els.convert50to20.checked);
+  applyJoinOptionChange();
 });
 els.joinBtn.addEventListener("click", joinAndDownload);
 

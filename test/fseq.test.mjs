@@ -12,6 +12,10 @@ import {
   stemOf,
   expandFrameChannels,
   upgradeFseqChannels,
+  convertStepFrames,
+  convertFseqStepTime,
+  convertedFrameCount,
+  effectiveStepTime,
   isHardBlocked,
   isSelectableForJoin,
   defaultInclude,
@@ -70,6 +74,25 @@ test("compatibility matches CLI include/skip rules", () => {
   });
   assert.equal(keep48up.include, true);
   assert.match(keep48up.note, /48ch \/ 20ms → 200ch/);
+
+  const keep50 = compatibilityFor(parseFseqHeader(createSampleFseq({ channelCount: 48, stepTime: 50 })), {
+    convert50to20: true,
+  });
+  assert.equal(keep50.include, true);
+  assert.match(keep50.note, /50ms → 20ms/);
+
+  const skip200at50 = compatibilityFor(parseFseqHeader(createSampleFseq({ channelCount: 200, stepTime: 50 })), {
+    convert50to20: true,
+  });
+  assert.equal(skip200at50.include, false);
+  assert.match(skip200at50.note, /200 channels/);
+
+  const keep200at50 = compatibilityFor(parseFseqHeader(createSampleFseq({ channelCount: 200, stepTime: 50 })), {
+    convert50to20: true,
+    upgrade48to200: true,
+  });
+  assert.equal(keep200at50.include, true);
+  assert.match(keep200at50.note, /200ch \/ 50ms → 20ms/);
 });
 
 function fakeShow({ channels = 48, stepTime = 20, include = false, audio = "wav", extra = {} } = {}) {
@@ -115,6 +138,15 @@ test("join target disables channel-mismatched checkboxes unless 48→200 upgrade
   assert.equal(isSelectableForJoin(show200, target), false);
   assert.equal(isSelectableForJoin(show200, target, { upgrade48to200: true }), true);
   assert.equal(isSelectableForJoin(show50, target, { upgrade48to200: true }), false);
+  assert.equal(isSelectableForJoin(show50, target, { convert50to20: true }), true);
+  assert.equal(defaultInclude(show50, { convert50to20: true }), true);
+  assert.equal(isHardBlocked(show50, { convert50to20: true }), false);
+  assert.deepEqual(resolveJoinTarget([fakeShow({ stepTime: 50, include: true })], { convert50to20: true }), {
+    channelCount: 48,
+    stepTime: 20,
+  });
+  assert.equal(effectiveStepTime(50, { convert50to20: true }), 20);
+  assert.equal(effectiveStepTime(20, { convert50to20: true }), 20);
   assert.equal(defaultInclude(show200), false);
   assert.equal(defaultInclude(show200, { upgrade48to200: true }), true);
   assert.equal(defaultInclude(fakeShow({ audio: "missing" })), false);
@@ -264,4 +296,75 @@ test("formatDurationWords and included duration sum", () => {
   assert.equal(totalIncludedDurationMs([a, b]), 5_000);
   assert.equal(formatDurationWords(totalIncludedDurationMs([a, b])), "0 min 5 sec");
   assert.equal(totalIncludedDurationMs([]), 0);
+});
+
+test("convertStepFrames maps two 50ms frames onto five 20ms frames (A,A,A,B,B)", () => {
+  const channels = 4;
+  const src = new Uint8Array(channels * 2);
+  src.fill(1, 0, channels);
+  src.fill(2, channels);
+  const out = convertStepFrames(src, channels, 2, 50, 20);
+  assert.equal(out.byteLength, 5 * channels);
+  assert.ok(out.subarray(0, channels).every((value) => value === 1));
+  assert.ok(out.subarray(channels, 2 * channels).every((value) => value === 1));
+  assert.ok(out.subarray(2 * channels, 3 * channels).every((value) => value === 1));
+  assert.ok(out.subarray(3 * channels, 4 * channels).every((value) => value === 2));
+  assert.ok(out.subarray(4 * channels).every((value) => value === 2));
+  assert.equal(convertedFrameCount(2, 50, 20), 5);
+  assert.equal(convertedFrameCount(1, 50, 20), 3);
+  assert.throws(() => convertStepFrames(src, channels, 2, 20, 50), /50ms → 20ms/);
+});
+
+test("convertFseqStepTime expands frames and rewrites header, preserving duration", () => {
+  const buffer = createSampleFseq({ frameCount: 4, stepTime: 50, fill: 9 });
+  const converted = convertFseqStepTime(buffer, 20);
+  const header = parseFseqHeader(converted);
+  assert.equal(header.stepTime, 20);
+  assert.equal(header.frameCount, 10);
+  assert.equal(header.channelCount, 48);
+  assert.equal(header.frameCount * header.stepTime, 4 * 50);
+
+  const data = new Uint8Array(converted, header.dataOffset);
+  assert.equal(data.byteLength, 10 * 48);
+  assert.ok(data.every((value) => value === 9));
+  assert.equal(validateFseq(converted).ok, true);
+
+  const already20 = createSampleFseq({ frameCount: 3, stepTime: 20 });
+  assert.equal(convertFseqStepTime(already20, 20), already20);
+  assert.throws(() => convertFseqStepTime(already20, 50), /50ms shows to 20ms/);
+});
+
+test("join converts 50ms shows to 20ms when the option is on", () => {
+  const native20 = createSampleFseq({ frameCount: 10, stepTime: 20, fill: 1 });
+  const slow50 = createSampleFseq({ frameCount: 2, stepTime: 50, fill: 2 });
+  assert.throws(() => joinFseqBuffers([native20, slow50]), /Step time mismatch/);
+
+  const joined = joinFseqBuffers([native20, slow50], { convert50to20: true });
+  assert.equal(joined.stepTime, 20);
+  assert.equal(joined.channelCount, 48);
+  assert.equal(joined.totalFrames, 15);
+  assert.equal(joined.durationS, 0.3);
+
+  const header = parseFseqHeader(joined.buffer);
+  assert.equal(header.stepTime, 20);
+  assert.equal(header.frameCount, 15);
+  const data = new Uint8Array(joined.buffer, header.dataOffset);
+  assert.ok(data.subarray(0, 10 * 48).every((value) => value === 1));
+  assert.ok(data.subarray(10 * 48, 13 * 48).every((value) => value === 2));
+  assert.ok(data.subarray(13 * 48).every((value) => value === 2));
+  assert.equal(validateFseq(joined.buffer).ok, true);
+});
+
+test("join can combine 50→20 conversion with 48→200 upgrade", () => {
+  const slow48 = createSampleFseq({ channelCount: 48, frameCount: 2, stepTime: 50, fill: 4 });
+  const wide20 = createSampleFseq({ channelCount: 200, frameCount: 3, stepTime: 20, fill: 6 });
+  const joined = joinFseqBuffers([slow48, wide20], { convert50to20: true, upgrade48to200: true });
+  assert.equal(joined.channelCount, 200);
+  assert.equal(joined.stepTime, 20);
+  assert.equal(joined.totalFrames, 8);
+  const data = new Uint8Array(joined.buffer, parseFseqHeader(joined.buffer).dataOffset);
+  const first = data.subarray(0, 200);
+  assert.ok(first.subarray(0, 48).every((value) => value === 4));
+  assert.ok(first.subarray(48).every((value) => value === 0));
+  assert.ok(data.subarray(5 * 200).every((value) => value === 6));
 });
