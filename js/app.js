@@ -381,6 +381,7 @@ async function joinAndDownload() {
       `Downloaded <strong>${escapeHtml(name)}.fseq</strong> — ${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText} Audio join coming next${missingAudio ? `; ${missingAudio} included show(s) have no matching mp3/wav` : ""}.`,
       validation.ok ? "ok" : "warn"
     );
+    els.joinStatus.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (err) {
     setJoinStatus(escapeHtml(err.message || String(err)), "err");
   } finally {
