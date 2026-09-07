@@ -491,6 +491,7 @@ th.sortable:focus-visible {
 
 .status {
   margin-top: 12px;
+  margin-bottom: 4px;
   padding: 10px 12px;
   border-radius: 10px;
   font-size: 14px;

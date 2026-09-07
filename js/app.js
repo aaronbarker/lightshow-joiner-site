@@ -436,12 +436,15 @@ function escapeAttr(value) {
   return escapeHtml(value).replaceAll("'", "&#39;");
 }
 
-function setJoinStatus(message, kind = "info") {
+function setJoinStatus(message, kind = "info", { scroll = false } = {}) {
   if (!message) {
     els.joinStatus.innerHTML = "";
     return;
   }
   els.joinStatus.innerHTML = `<div class="status ${kind}">${message}</div>`;
+  if (scroll) {
+    els.joinStatus.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
 
 function downloadBlob(data, filename, type) {
@@ -491,7 +494,8 @@ async function joinAndDownload() {
 
   const name = (els.outputName.value || "joined").replace(/\.(fseq|zip|mp3)$/i, "").trim() || "joined";
   els.joinBtn.disabled = true;
-  setJoinStatus("Reading sequences and concatenating frames…", "info");
+  els.joinBtn.textContent = "Joining…";
+  setJoinStatus("Reading sequences and concatenating frames…", "info", { scroll: true });
 
   try {
     const buffers = [];
@@ -505,7 +509,7 @@ async function joinAndDownload() {
     let audioResult = null;
     let audioError = null;
     try {
-      audioResult = await joinShowAudio(selected, (message) => setJoinStatus(message, "info"));
+      audioResult = await joinShowAudio(selected, (message) => setJoinStatus(message, "info", { scroll: true }));
     } catch (err) {
       audioError = err;
     }
@@ -533,8 +537,9 @@ async function joinAndDownload() {
     }
     els.joinStatus.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (err) {
-    setJoinStatus(escapeHtml(err.message || String(err)), "err");
+    setJoinStatus(escapeHtml(err.message || String(err)), "err", { scroll: true });
   } finally {
+    els.joinBtn.textContent = "Join & download";
     els.joinBtn.disabled = includedShows().length < 2;
   }
 }
