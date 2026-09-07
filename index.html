@@ -9,7 +9,7 @@
       content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260907-vchange" />
+    <link rel="stylesheet" href="./styles.css?v=20260907-joincheck" />
   </head>
   <body>
     <main class="app">
@@ -136,10 +136,13 @@
             grid. Channel counts must match, or turn on
             <strong>Upgrade 48ch → 200ch</strong> to pad 48-channel frames to 200.
             Missing-pair and incompatible rows stay unchecked and locked.
-            A successful join downloads a <strong>.zip</strong> with the combined
-            <code>.fseq</code> and concatenated <code>.mp3</code> (WAV tracks are
-            converted first, in the browser). If audio join fails, you still get
-            the FSEQ and an error message.
+            After a join, each included row gets a <strong>Join verified</strong>
+            or <strong>Join mismatch</strong> badge under the name — the output
+            FSEQ is compared to that show’s frames (after the same 48→200 /
+            50→20 transforms). A successful join downloads a <strong>.zip</strong>
+            with the combined <code>.fseq</code> and concatenated
+            <code>.mp3</code> (WAV tracks are converted first, in the browser).
+            If audio join fails, you still get the FSEQ and an error message.
           </p>
         </div>
       </section>
@@ -154,6 +157,6 @@
         <code>validator.py</code> checks.
       </footer>
     </main>
-    <script type="module" src="./js/app.js?v=20260907-vchange"></script>
+    <script type="module" src="./js/app.js?v=20260907-joincheck"></script>
   </body>
 </html>
