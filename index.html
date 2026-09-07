@@ -105,9 +105,13 @@
               </span>
             </label>
             <button type="button" class="btn btn-primary" id="join-btn">
-              Join &amp; download .fseq
+              Join &amp; download
             </button>
           </div>
+          <p class="combined-time" id="combined-time">
+            <strong>Total time of combined output:</strong>
+            <span id="combined-time-value">—</span>
+          </p>
           <p class="join-note">
             Join follows the <strong>current table order</strong> of checked rows
             (sort a column or drag the handle to reorder). Only uncompressed V2
@@ -115,8 +119,10 @@
             step time can be concatenated. Channel counts must match, or turn on
             <strong>Upgrade 48ch → 200ch</strong> to pad 48-channel frames to 200.
             Missing-pair and incompatible rows stay unchecked and locked.
-            <strong>Audio join is coming next</strong> (ffmpeg.wasm). Download the
-            FSEQ now and pair audio yourself, or use the Python CLI to concat MP3s.
+            A successful join downloads a <strong>.zip</strong> with the combined
+            <code>.fseq</code> and concatenated <code>.mp3</code> (WAV tracks are
+            converted first, in the browser). If audio join fails, you still get
+            the FSEQ and an error message.
           </p>
           <div id="join-status"></div>
         </div>

@@ -89,6 +89,31 @@ export function formatDurationPrecise(header) {
 }
 
 /**
+ * Human duration for the pre-join total: "X min Y sec", with hours when needed.
+ * Invalid values return "—". Zero is "0 min 0 sec".
+ */
+export function formatDurationWords(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return "—";
+  const totalSec = Math.round(ms / 1000);
+  const hours = Math.floor(totalSec / 3600);
+  const minutes = Math.floor((totalSec % 3600) / 60);
+  const seconds = totalSec % 60;
+  const parts = [];
+  if (hours > 0) parts.push(`${hours} hr`);
+  parts.push(`${minutes} min`);
+  parts.push(`${seconds} sec`);
+  return parts.join(" ");
+}
+
+/** Sum FSEQ durations for the same row set the join button uses. */
+export function totalIncludedDurationMs(shows) {
+  return (shows || []).reduce((sum, show) => {
+    if (!show?.header) return sum;
+    return sum + durationMs(show.header);
+  }, 0);
+}
+
+/**
  * Tesla validator.py checks (client-side).
  * Returns { ok, errors, warnings, results }.
  */

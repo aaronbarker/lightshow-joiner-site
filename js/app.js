@@ -5,6 +5,8 @@ import {
   createSampleFseq,
   createSilentWav,
   formatDurationPrecise,
+  formatDurationWords,
+  totalIncludedDurationMs,
   durationMs,
   stemOf,
   extensionOf,
@@ -15,6 +17,8 @@ import {
   missingPairNote,
   isMissingPair,
 } from "./fseq.js";
+import { joinShowAudio, preloadFfmpeg } from "./audio-join.js";
+import { createZipStore } from "./zip.js";
 
 const ACCEPTED = new Set(["fseq", "mp3", "wav"]);
 
@@ -40,6 +44,7 @@ const els = {
   joinBtn: document.getElementById("join-btn"),
   outputName: document.getElementById("output-name"),
   upgrade48to200: document.getElementById("upgrade-48-to-200"),
+  combinedTimeValue: document.getElementById("combined-time-value"),
   joinStatus: document.getElementById("join-status"),
   clearShows: document.getElementById("clear-shows"),
   selectCompatible: document.getElementById("select-compatible"),
@@ -172,6 +177,9 @@ async function ingestFiles(fileList, { replace = false } = {}) {
   state.customOrder = false;
   sortShows();
   render();
+  preloadFfmpeg().catch(() => {
+    // Join will surface a real error if the engine is still unavailable.
+  });
 }
 
 async function readShow(file, path, audioFiles) {
@@ -283,6 +291,7 @@ function render() {
   if (!hasShows) {
     els.rows.innerHTML = "";
     els.stats.innerHTML = "";
+    updateCombinedTime([]);
     return;
   }
 
@@ -357,7 +366,19 @@ function render() {
   }
 
   els.joinBtn.disabled = included.length < 2;
+  updateCombinedTime(included);
   bindRowEvents();
+}
+
+function updateCombinedTime(included = includedShows()) {
+  if (!els.combinedTimeValue) return;
+  if (!included.length) {
+    els.combinedTimeValue.textContent = "—";
+    els.combinedTimeValue.classList.add("is-empty");
+    return;
+  }
+  els.combinedTimeValue.textContent = formatDurationWords(totalIncludedDurationMs(included));
+  els.combinedTimeValue.classList.remove("is-empty");
 }
 
 function bindRowEvents() {
@@ -423,6 +444,26 @@ function setJoinStatus(message, kind = "info") {
   els.joinStatus.innerHTML = `<div class="status ${kind}">${message}</div>`;
 }
 
+function downloadBlob(data, filename, type) {
+  const blob = data instanceof Blob ? data : new Blob([data], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function fseqSummary(selected, joined, validation) {
+  const validText = validation.ok
+    ? `Tesla validator checks passed (${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s).`
+    : `Joined file failed validator: ${validation.errors.join("; ")}`;
+  const upgradeNote = state.upgrade48to200 ? " 48→200 upgrade applied." : "";
+  return `${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote}`;
+}
+
 async function joinAndDownload() {
   const selected = includedShows();
   if (selected.length < 2) {
@@ -448,7 +489,7 @@ async function joinAndDownload() {
     }
   }
 
-  const name = (els.outputName.value || "joined").replace(/\.fseq$/i, "").trim() || "joined";
+  const name = (els.outputName.value || "joined").replace(/\.(fseq|zip|mp3)$/i, "").trim() || "joined";
   els.joinBtn.disabled = true;
   setJoinStatus("Reading sequences and concatenating frames…", "info");
 
@@ -459,25 +500,37 @@ async function joinAndDownload() {
     }
     const joined = joinFseqBuffers(buffers, joinOptions());
     const validation = validateFseq(joined.buffer);
-    const blob = new Blob([joined.bytes], { type: "application/octet-stream" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${name}.fseq`;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    URL.revokeObjectURL(url);
+    const summary = fseqSummary(selected, joined, validation);
 
-    const missingAudio = selected.filter((show) => show.audio.kind === "missing").length;
-    const validText = validation.ok
-      ? `Tesla validator checks passed (${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s).`
-      : `Joined file failed validator: ${validation.errors.join("; ")}`;
-    const upgradeNote = state.upgrade48to200 ? " 48→200 upgrade applied." : "";
-    setJoinStatus(
-      `Downloaded <strong>${escapeHtml(name)}.fseq</strong> — ${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote} Audio join coming next${missingAudio ? `; ${missingAudio} included show(s) have no matching mp3/wav` : ""}.`,
-      validation.ok ? "ok" : "warn"
-    );
+    let audioResult = null;
+    let audioError = null;
+    try {
+      audioResult = await joinShowAudio(selected, (message) => setJoinStatus(message, "info"));
+    } catch (err) {
+      audioError = err;
+    }
+
+    if (audioResult) {
+      const zipBytes = createZipStore([
+        { name: `${name}.fseq`, data: joined.bytes },
+        { name: `${name}.mp3`, data: audioResult.bytes },
+      ]);
+      downloadBlob(zipBytes, `${name}.zip`, "application/zip");
+      const wavNote = audioResult.convertedWav
+        ? ` Converted ${audioResult.convertedWav} WAV file(s) to MP3 (may drift slightly vs lights).`
+        : "";
+      setJoinStatus(
+        `Downloaded <strong>${escapeHtml(name)}.zip</strong> containing <strong>${escapeHtml(name)}.fseq</strong> and <strong>${escapeHtml(name)}.mp3</strong> — ${summary}${wavNote}`,
+        validation.ok ? "ok" : "warn"
+      );
+    } else {
+      downloadBlob(joined.bytes, `${name}.fseq`, "application/octet-stream");
+      const reason = audioError?.message || "Audio join did not run.";
+      setJoinStatus(
+        `Downloaded <strong>${escapeHtml(name)}.fseq</strong> only — ${summary} Audio join failed: ${escapeHtml(reason)}`,
+        "warn"
+      );
+    }
     els.joinStatus.scrollIntoView({ behavior: "smooth", block: "nearest" });
   } catch (err) {
     setJoinStatus(escapeHtml(err.message || String(err)), "err");

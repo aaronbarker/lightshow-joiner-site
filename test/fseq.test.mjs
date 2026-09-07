@@ -7,6 +7,8 @@ import {
   joinFseqBuffers,
   createSampleFseq,
   formatDuration,
+  formatDurationWords,
+  totalIncludedDurationMs,
   stemOf,
   expandFrameChannels,
   upgradeFseqChannels,
@@ -243,4 +245,23 @@ test("formatDuration and stem helpers", () => {
   assert.equal(formatDuration(90_000), "1:30");
   assert.equal(formatDuration(3_661_000), "1:01:01");
   assert.equal(stemOf("Shows/Halloween Intro.FSEQ"), "halloween intro");
+});
+
+test("formatDurationWords and included duration sum", () => {
+  assert.equal(formatDurationWords(-1), "—");
+  assert.equal(formatDurationWords(Number.NaN), "—");
+  assert.equal(formatDurationWords(0), "0 min 0 sec");
+  assert.equal(formatDurationWords(5_000), "0 min 5 sec");
+  assert.equal(formatDurationWords(90_000), "1 min 30 sec");
+  assert.equal(formatDurationWords(3_661_000), "1 hr 1 min 1 sec");
+
+  const a = fakeShow({ include: true });
+  a.header.frameCount = 100;
+  a.header.stepTime = 20;
+  const b = fakeShow({ include: true });
+  b.header.frameCount = 150;
+  b.header.stepTime = 20;
+  assert.equal(totalIncludedDurationMs([a, b]), 5_000);
+  assert.equal(formatDurationWords(totalIncludedDurationMs([a, b])), "0 min 5 sec");
+  assert.equal(totalIncludedDurationMs([]), 0);
 });

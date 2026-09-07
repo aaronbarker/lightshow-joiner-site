@@ -14,9 +14,10 @@ The Python CLI stays in its own repo. This site does not modify that project.
 4. Compatible shows default to **include** (48 channels + 20 ms, with matching audio). **50 ms** shows stay skipped — this site does not convert step time. **200-channel** shows stay skipped unless you turn on **Upgrade 48ch → 200ch**.
 5. Missing pairs (`.fseq` without audio, or audio without `.fseq`) are shown as **red error rows** with the include checkbox disabled. Incompatible shows (wrong step time, channel mismatch vs the current join target, compressed/invalid) also have the checkbox locked.
 6. Sort by clicking column headers (starts as name ascending). Drag the `⋮⋮` handle to set join order.
-7. **Join & download .fseq** concatenates frame data and rewrites the frame count, same as `joiner-fseq.py`.
+7. Watch **Total time of combined output** — it sums the currently checked, join-eligible rows and updates when you change includes, sort/order, or 48→200 upgrade.
+8. **Join & download** concatenates frame data (same as `joiner-fseq.py`) and joins matching audio in that same table order. WAV files are converted to MP3 in the browser (ffmpeg.wasm), then MP3s are concatenated. You get a `.zip` with `name.fseq` + `name.mp3`. If audio join fails, the FSEQ still downloads and the error is shown.
 
-Audio concatenation (ffmpeg.wasm) is not in this first ship. Pair the downloaded `.fseq` with audio yourself, or use the Python CLI + ffmpeg for MP3 join.
+The first audio join downloads the ffmpeg.wasm engine (~32 MB from jsDelivr) and caches it in this browser. Later joins reuse that cache. Nothing is uploaded.
 
 **Load sample shows** builds synthetic PSEQ files in memory so you can try the table and join without Tesla files.
 
@@ -30,10 +31,10 @@ python3 -m http.server 8080
 
 Then open http://localhost:8080
 
-FSEQ parse/join unit tests (no browser required):
+FSEQ parse/join, duration, zip, and audio-helper unit tests (no browser required):
 
 ```bash
-node --test test/fseq.test.mjs
+npm test
 ```
 
 ## Enable GitHub Pages
