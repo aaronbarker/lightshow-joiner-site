@@ -146,8 +146,10 @@ export function validateFseq(buffer) {
 /**
  * CLI include/skip rules from lightshow-joiner.py:
  * skip 50ms, skip 200ch, keep 48ch / 20ms as the default compatible set.
+ * When upgrade48to200 is on, 48ch/20ms and 200ch/20ms are both include-eligible
+ * (48ch frames are padded to 200ch at join time). Step-time is never converted.
  */
-export function compatibilityFor(header) {
+export function compatibilityFor(header, { upgrade48to200 = false } = {}) {
   if (!header) {
     return { include: false, kind: "error", note: "Could not read header" };
   }
@@ -155,12 +157,18 @@ export function compatibilityFor(header) {
     return { include: false, kind: "skip", note: "Skip: compressed (Tesla needs uncompressed V2)" };
   }
   if (header.stepTime === SKIP_STEP_MS) {
-    return { include: false, kind: "skip", note: "Skip: 50ms step time" };
+    return { include: false, kind: "skip", note: "Skip: 50ms step time (no conversion)" };
   }
-  if (header.channelCount === SKIP_CHANNELS) {
+  if (header.channelCount === SKIP_CHANNELS && header.stepTime === DEFAULT_STEP_MS) {
+    if (upgrade48to200) {
+      return { include: true, kind: "include", note: "Include: 200ch / 20ms" };
+    }
     return { include: false, kind: "skip", note: "Skip: 200 channels" };
   }
   if (header.channelCount === DEFAULT_CHANNELS && header.stepTime === DEFAULT_STEP_MS) {
+    if (upgrade48to200) {
+      return { include: true, kind: "include", note: "Include: 48ch / 20ms → 200ch" };
+    }
     return { include: true, kind: "include", note: "Include: 48ch / 20ms" };
   }
   return {
@@ -170,6 +178,166 @@ export function compatibilityFor(header) {
   };
 }
 
+export function isMissingPair(show) {
+  return Boolean(show?.orphanAudio) || show?.audio?.kind === "missing";
+}
+
+/**
+ * Shows that can never be merged: missing fseq/audio pair, unreadable,
+ * compressed/invalid, or 50ms (step time is not converted).
+ */
+export function isHardBlocked(show) {
+  if (!show) return true;
+  if (show.orphanAudio) return true;
+  if (!show.header || show.error) return true;
+  if (isMissingPair(show)) return true;
+  if (show.header.compression !== 0) return true;
+  if (show.validation && show.validation.ok === false) return true;
+  if (show.header.stepTime === SKIP_STEP_MS) return true;
+  return false;
+}
+
+export function resolveJoinTarget(shows) {
+  const included = (shows || []).filter((show) => show.include && show.header && !show.orphanAudio);
+  if (!included.length) return null;
+  return {
+    channelCount: included[0].header.channelCount,
+    stepTime: included[0].header.stepTime,
+  };
+}
+
+export function channelsMatchForJoin(showChannels, targetChannels, upgrade48to200 = false) {
+  if (showChannels === targetChannels) return true;
+  if (!upgrade48to200) return false;
+  const pair = new Set([showChannels, targetChannels]);
+  return pair.has(DEFAULT_CHANNELS) && pair.has(SKIP_CHANNELS);
+}
+
+export function isSelectableForJoin(show, target, { upgrade48to200 = false } = {}) {
+  if (isHardBlocked(show)) return false;
+  if (!target) {
+    return (
+      show.header.stepTime === DEFAULT_STEP_MS &&
+      (show.header.channelCount === DEFAULT_CHANNELS || show.header.channelCount === SKIP_CHANNELS)
+    );
+  }
+  if (show.header.stepTime !== target.stepTime) return false;
+  return channelsMatchForJoin(show.header.channelCount, target.channelCount, upgrade48to200);
+}
+
+export function defaultInclude(show, { upgrade48to200 = false } = {}) {
+  if (isHardBlocked(show)) return false;
+  return compatibilityFor(show.header, { upgrade48to200 }).include;
+}
+
+export function missingPairNote(show) {
+  if (show?.orphanAudio) return "Audio without matching .fseq";
+  if (show?.audio?.kind === "missing") return "Missing matching .mp3/.wav";
+  return "";
+}
+
+export function rowCompatibility(show, target, { upgrade48to200 = false } = {}) {
+  if (show?.orphanAudio) {
+    return { include: false, kind: "error", note: "Missing .fseq pair" };
+  }
+  if (show?.audio?.kind === "missing") {
+    return { include: false, kind: "error", note: "Missing audio pair" };
+  }
+  if (show?.error || !show?.header) {
+    return { include: false, kind: "error", note: show?.error || "Could not read header" };
+  }
+
+  const base = compatibilityFor(show.header, { upgrade48to200 });
+  if (isSelectableForJoin(show, target, { upgrade48to200 })) {
+    if (base.kind === "include") return { ...base, include: true };
+    return {
+      include: true,
+      kind: "include",
+      note: `Can join: ${show.header.channelCount}ch / ${show.header.stepTime}ms`,
+    };
+  }
+
+  if (show.header.compression !== 0) return base;
+  if (show.header.stepTime === SKIP_STEP_MS) return base;
+  if (target && show.header.stepTime !== target.stepTime) {
+    return {
+      include: false,
+      kind: "skip",
+      note: `Skip: ${show.header.stepTime}ms vs ${target.stepTime}ms join target`,
+    };
+  }
+  if (target && !channelsMatchForJoin(show.header.channelCount, target.channelCount, upgrade48to200)) {
+    return {
+      include: false,
+      kind: "skip",
+      note: `Skip: ${show.header.channelCount}ch vs ${target.channelCount}ch join target`,
+    };
+  }
+  return { ...base, include: false };
+}
+
+/**
+ * Expand each frame from `fromChannels` to `toChannels` by padding unused
+ * channels with zeros (the easy 48 → 200 conversion). Does not change step time.
+ */
+export function expandFrameChannels(frameData, fromChannels, toChannels, frameCount) {
+  if (toChannels < fromChannels) {
+    throw new Error(`Cannot shrink frames from ${fromChannels} to ${toChannels} channels`);
+  }
+  if (toChannels === fromChannels) {
+    return frameData.subarray(0, fromChannels * frameCount);
+  }
+  const expected = fromChannels * frameCount;
+  if (frameData.byteLength < expected) {
+    throw new Error("Not enough frame data to expand channels");
+  }
+  const out = new Uint8Array(toChannels * frameCount);
+  for (let i = 0; i < frameCount; i += 1) {
+    const srcOff = i * fromChannels;
+    const dstOff = i * toChannels;
+    out.set(frameData.subarray(srcOff, srcOff + fromChannels), dstOff);
+  }
+  return out;
+}
+
+/**
+ * Pad an uncompressed 48ch FSEQ to 200 channels and rewrite the header count.
+ * Already-200 files are returned unchanged. Step time is left as-is.
+ */
+export function upgradeFseqChannels(buffer, toChannels = SKIP_CHANNELS) {
+  const header = parseFseqHeader(buffer);
+  if (header.channelCount === toChannels) {
+    return buffer;
+  }
+  if (header.channelCount !== DEFAULT_CHANNELS) {
+    throw new Error(
+      `Can only upgrade ${DEFAULT_CHANNELS}-channel shows to ${toChannels} channels (got ${header.channelCount})`
+    );
+  }
+  if (header.compression !== 0) {
+    throw new Error("Cannot upgrade a compressed FSEQ");
+  }
+
+  const expected = header.channelCount * header.frameCount;
+  const frameData = new Uint8Array(buffer, header.dataOffset);
+  if (frameData.byteLength < expected) {
+    throw new Error("Not enough frame data to upgrade channel count");
+  }
+
+  const expanded = expandFrameChannels(
+    frameData.subarray(0, expected),
+    header.channelCount,
+    toChannels,
+    header.frameCount
+  );
+  const out = new Uint8Array(header.dataOffset + expanded.byteLength);
+  out.set(new Uint8Array(buffer, 0, header.dataOffset), 0);
+  out.set(expanded, header.dataOffset);
+  const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
+  view.setUint32(10, toChannels, true);
+  return out.buffer;
+}
+
 function setUint64LE(view, offset, value) {
   const big = BigInt(value);
   const mask = 0xffffffffn;
@@ -177,12 +345,21 @@ function setUint64LE(view, offset, value) {
   view.setUint32(offset + 4, Number((big >> 32n) & mask), true);
 }
 
-export function joinFseqBuffers(buffers) {
+export function joinFseqBuffers(buffers, { upgrade48to200 = false } = {}) {
   if (!buffers || buffers.length < 1) {
     throw new Error("Need at least one FSEQ file to join");
   }
 
-  const parsed = buffers.map((buffer, index) => {
+  const prepared = buffers.map((buffer) => {
+    if (!upgrade48to200) return buffer;
+    const header = parseFseqHeader(buffer);
+    if (header.channelCount === DEFAULT_CHANNELS) {
+      return upgradeFseqChannels(buffer, SKIP_CHANNELS);
+    }
+    return buffer;
+  });
+
+  const parsed = prepared.map((buffer, index) => {
     const header = parseFseqHeader(buffer);
     if (header.compression !== 0) {
       throw new Error(`File ${index + 1} is compressed. Tesla requires uncompressed V2.`);

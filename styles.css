@@ -11,6 +11,8 @@
   --accent: #e82127;
   --accent-hover: #ff3b3f;
   --accent-soft: rgba(232, 33, 39, 0.14);
+  --join: #3b6cff;
+  --join-hover: #2f5aef;
   --include: #3dd68c;
   --include-soft: rgba(61, 214, 140, 0.12);
   --skip: #f5a524;
@@ -111,20 +113,24 @@ h1 {
 }
 
 .btn-primary {
-  background: var(--accent);
+  background: var(--join);
   border-color: transparent;
   color: white;
   font-weight: 650;
 }
 
 .btn-primary:hover {
-  background: var(--accent-hover);
+  background: var(--join-hover);
 }
 
 .btn-primary:disabled,
 .btn:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+#join-btn {
+  white-space: nowrap;
 }
 
 .privacy {
@@ -213,6 +219,12 @@ h1 {
   background: var(--skip-soft);
 }
 
+.chip.error {
+  border-color: rgba(255, 107, 107, 0.35);
+  background: var(--error-soft);
+  color: var(--error);
+}
+
 .table-wrap {
   overflow: auto;
   border: 1px solid var(--line);
@@ -281,6 +293,38 @@ tbody tr.is-dragging {
 
 tbody tr.is-skip {
   color: #d3d7df;
+}
+
+tbody tr.is-error {
+  background: rgba(255, 80, 80, 0.2);
+  color: #ffe1e1;
+  box-shadow: inset 4px 0 0 var(--error);
+}
+
+tbody tr.is-error:nth-child(even) {
+  background: rgba(255, 80, 80, 0.26);
+}
+
+tbody tr.is-error:hover {
+  background: rgba(255, 80, 80, 0.34);
+}
+
+tbody tr.is-error .name-cell {
+  color: #fff0f0;
+}
+
+.row-status {
+  display: block;
+  margin-top: 3px;
+  font-size: 12px;
+  font-weight: 750;
+  color: var(--error);
+  letter-spacing: 0.01em;
+}
+
+input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .name-cell {
@@ -355,6 +399,38 @@ tbody tr.is-skip {
   flex-wrap: wrap;
   gap: 12px;
   align-items: flex-end;
+}
+
+label.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 420px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #0f1116;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+label.toggle input {
+  margin-top: 3px;
+  accent-color: var(--join);
+}
+
+label.toggle strong {
+  display: block;
+  font-size: 13px;
+}
+
+label.toggle small {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 label.field {

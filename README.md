@@ -11,9 +11,10 @@ The Python CLI stays in its own repo. This site does not modify that project.
 1. Open the site (local preview or GitHub Pages).
 2. Drag a lightshow folder onto the drop zone, or use **Choose files** / **Choose folder**. Folder pick needs a browser that supports `webkitdirectory` (desktop Chrome and Safari do).
 3. Review the table: name, channels, step time, frames, duration, audio match (`mp3` / `wav` / `missing`), compatibility, and Tesla-style validator result.
-4. Compatible shows default to **include** (48 channels + 20 ms). **50 ms** and **200-channel** shows are skipped, matching the Python tool. You can check a homogeneous set if you want to join those instead.
-5. Sort by clicking column headers (starts as name ascending). Drag the `⋮⋮` handle to set join order.
-6. **Join & download .fseq** concatenates frame data and rewrites the frame count, same as `joiner-fseq.py`.
+4. Compatible shows default to **include** (48 channels + 20 ms, with matching audio). **50 ms** shows stay skipped — this site does not convert step time. **200-channel** shows stay skipped unless you turn on **Upgrade 48ch → 200ch**.
+5. Missing pairs (`.fseq` without audio, or audio without `.fseq`) are shown as **red error rows** with the include checkbox disabled. Incompatible shows (wrong step time, channel mismatch vs the current join target, compressed/invalid) also have the checkbox locked.
+6. Sort by clicking column headers (starts as name ascending). Drag the `⋮⋮` handle to set join order.
+7. **Join & download .fseq** concatenates frame data and rewrites the frame count, same as `joiner-fseq.py`.
 
 Audio concatenation (ffmpeg.wasm) is not in this first ship. Pair the downloaded `.fseq` with audio yourself, or use the Python CLI + ffmpeg for MP3 join.
 
@@ -51,12 +52,15 @@ Notes:
 - `.nojekyll` is included so GitHub does not run Jekyll on the `js/` folder.
 - Hosting this site is not an upload backend. User lightshows never leave the browser.
 
-## Compatibility (same as the CLI)
+## Compatibility (same as the CLI, plus optional 48→200)
 
 | Show type        | Default        |
 | ---------------- | -------------- |
-| 48 channels, 20 ms, uncompressed V2 | Include |
-| 50 ms step time  | Skip           |
-| 200 channels     | Skip           |
+| 48 channels, 20 ms, uncompressed V2, with audio | Include |
+| Missing `.fseq` / audio pair | Error row (checkbox disabled) |
+| 50 ms step time  | Skip (disabled; no conversion) |
+| 200 channels, 20 ms | Skip, unless **Upgrade 48ch → 200ch** is on |
 
-Join still requires matching channel count and step time across the checked rows. Tesla `validator.py` checks run client-side (PSEQ magic, 48 or 200 channels, uncompressed, step ≥ 15 ms, duration under 4 hours).
+Join still requires matching step time across the checked rows. Channel counts must match, or enable **Upgrade 48ch → 200ch** near the join button. That option expands each 48-channel frame to 200 channels by padding unused channels with zeros and updates the FSEQ header channel count to 200. It does **not** convert 20 ms ↔ 50 ms.
+
+Tesla `validator.py` checks run client-side (PSEQ magic, 48 or 200 channels, uncompressed, step ≥ 15 ms, duration under 4 hours).

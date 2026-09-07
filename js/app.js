@@ -1,7 +1,6 @@
 import {
   parseFseqHeader,
   validateFseq,
-  compatibilityFor,
   joinFseqBuffers,
   createSampleFseq,
   createSilentWav,
@@ -9,6 +8,12 @@ import {
   durationMs,
   stemOf,
   extensionOf,
+  defaultInclude,
+  isSelectableForJoin,
+  resolveJoinTarget,
+  rowCompatibility,
+  missingPairNote,
+  isMissingPair,
 } from "./fseq.js";
 
 const ACCEPTED = new Set(["fseq", "mp3", "wav"]);
@@ -19,6 +24,7 @@ const state = {
   sortKey: "name",
   sortDir: "asc",
   customOrder: false,
+  upgrade48to200: false,
 };
 
 const els = {
@@ -33,10 +39,15 @@ const els = {
   rows: document.getElementById("show-rows"),
   joinBtn: document.getElementById("join-btn"),
   outputName: document.getElementById("output-name"),
+  upgrade48to200: document.getElementById("upgrade-48-to-200"),
   joinStatus: document.getElementById("join-status"),
   clearShows: document.getElementById("clear-shows"),
   selectCompatible: document.getElementById("select-compatible"),
 };
+
+function joinOptions() {
+  return { upgrade48to200: state.upgrade48to200 };
+}
 
 function fileKey(file) {
   return (file.webkitRelativePath || file.name).replaceAll("\\", "/");
@@ -121,6 +132,7 @@ async function ingestFiles(fileList, { replace = false } = {}) {
 
   if (replace) {
     state.shows = [];
+    state.audioByKey.clear();
   }
 
   const audioFiles = files.filter((file) => extensionOf(file.name) !== "fseq");
@@ -131,7 +143,8 @@ async function ingestFiles(fileList, { replace = false } = {}) {
   }
 
   if (!fseqFiles.length && !state.shows.length) {
-    setJoinStatus("Audio files were added, but no .fseq sequences yet.", "info");
+    render();
+    setJoinStatus("Audio files were added, but no matching .fseq sequences yet.", "warn");
     return;
   }
 
@@ -146,8 +159,13 @@ async function ingestFiles(fileList, { replace = false } = {}) {
   // Re-pair audio in case matching wav/mp3 arrived after an fseq.
   const allAudio = [...state.audioByKey.values()];
   for (const show of state.shows) {
+    const wasMissing = show.audio?.kind === "missing";
     show.audio = pairAudio(show.path, allAudio);
+    if (wasMissing && defaultInclude(show, joinOptions())) {
+      show.include = true;
+    }
   }
+  applyEligibility();
 
   state.sortKey = "name";
   state.sortDir = "asc";
@@ -167,9 +185,8 @@ async function readShow(file, path, audioFiles) {
   }
 
   const validation = error ? { ok: false, errors: [error], warnings: [] } : validateFseq(headerBytes);
-  const compat = error ? { include: false, kind: "error", note: error } : compatibilityFor(header);
-
-  return {
+  const audio = pairAudio(path, audioFiles);
+  const show = {
     id: `${path}:${file.size}:${file.lastModified}`,
     path,
     name: basename(path),
@@ -177,10 +194,11 @@ async function readShow(file, path, audioFiles) {
     header,
     error,
     validation,
-    compat,
-    include: Boolean(compat.include && !error),
-    audio: pairAudio(path, audioFiles),
+    include: false,
+    audio,
   };
+  show.include = defaultInclude(show, joinOptions());
+  return show;
 }
 
 function sortShows() {
@@ -195,7 +213,9 @@ function sortShows() {
     if (key === "frames") return show.header?.frameCount ?? -1;
     if (key === "duration") return show.header ? durationMs(show.header) : -1;
     if (key === "audio") return show.audio.kind;
-    if (key === "compat") return show.compat.note.toLowerCase();
+    if (key === "compat") {
+      return rowCompatibility(show, resolveJoinTarget(state.shows), joinOptions()).note.toLowerCase();
+    }
     if (key === "valid") return show.validation.ok ? 1 : 0;
     return show.name.toLowerCase();
   };
@@ -211,11 +231,54 @@ function sortShows() {
 }
 
 function includedShows() {
-  return state.shows.filter((show) => show.include && show.header);
+  return state.shows.filter((show) => show.include && show.header && !show.orphanAudio);
+}
+
+function orphanAudioShows() {
+  const paired = new Set();
+  for (const show of state.shows) {
+    if (show.audio?.file) paired.add(fileKey(show.audio.file));
+  }
+  const orphans = [];
+  for (const [key, file] of state.audioByKey) {
+    if (paired.has(key)) continue;
+    const kind = extensionOf(file.name) === "mp3" ? "mp3" : "wav";
+    orphans.push({
+      id: `orphan-audio:${key}:${file.size}:${file.lastModified}`,
+      path: key,
+      name: basename(key),
+      file: null,
+      header: null,
+      error: "Audio without matching .fseq",
+      validation: { ok: false, errors: ["Audio without matching .fseq"], warnings: [] },
+      include: false,
+      audio: { kind, file },
+      orphanAudio: true,
+    });
+  }
+  return orphans;
+}
+
+function displayShows() {
+  return [...state.shows, ...orphanAudioShows()];
+}
+
+function applyEligibility({ selectCompatible = false } = {}) {
+  const target = resolveJoinTarget(state.shows);
+  const options = joinOptions();
+  for (const show of state.shows) {
+    const selectable = isSelectableForJoin(show, target, options);
+    if (!selectable) {
+      show.include = false;
+    } else if (selectCompatible) {
+      show.include = defaultInclude(show, options) || (target ? selectable : show.include);
+    }
+  }
 }
 
 function render() {
-  const hasShows = state.shows.length > 0;
+  const rows = displayShows();
+  const hasShows = rows.length > 0;
   els.results.classList.toggle("is-visible", hasShows);
   if (!hasShows) {
     els.rows.innerHTML = "";
@@ -223,18 +286,31 @@ function render() {
     return;
   }
 
+  const target = resolveJoinTarget(state.shows);
+  const options = joinOptions();
   const included = includedShows();
-  const skipped = state.shows.length - included.length;
+  const pairErrors = rows.filter((show) => isMissingPair(show)).length;
+  const skipped = rows.length - included.length;
   els.stats.innerHTML = `
-    <span class="chip"><strong>${state.shows.length}</strong> scanned</span>
+    <span class="chip"><strong>${rows.length}</strong> scanned</span>
     <span class="chip include"><strong>${included.length}</strong> included</span>
-    <span class="chip skip"><strong>${skipped}</strong> skipped / unchecked</span>
+    <span class="chip skip"><strong>${skipped}</strong> skipped / blocked</span>
+    ${pairErrors ? `<span class="chip error"><strong>${pairErrors}</strong> missing pair</span>` : ""}
   `;
 
-  els.rows.innerHTML = state.shows
+  els.rows.innerHTML = rows
     .map((show, index) => {
       const header = show.header;
-      const audioLabel = show.audio.kind === "missing" ? "missing" : show.audio.kind;
+      const compat = rowCompatibility(show, target, options);
+      const selectable = isSelectableForJoin(show, target, options);
+      const pairNote = missingPairNote(show);
+      const errorRow = Boolean(pairNote || show.error || show.orphanAudio);
+      const audioLabel = show.orphanAudio
+        ? `${show.audio.kind} (no .fseq)`
+        : show.audio.kind === "missing"
+          ? "missing pair"
+          : show.audio.kind;
+      const audioClass = show.audio.kind === "missing" || show.orphanAudio ? "error" : `audio-${show.audio.kind}`;
       const validLabel = show.validation.ok
         ? show.validation.warnings?.length
           ? "warn"
@@ -243,22 +319,32 @@ function render() {
       const validTitle = show.validation.ok
         ? show.validation.warnings?.join(" ") || "Tesla validator checks passed"
         : show.validation.errors.join(" ");
+      const rowClass = [
+        errorRow ? "is-error" : "",
+        !errorRow && compat.kind === "skip" ? "is-skip" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      const statusText = pairNote || show.error || "";
       return `
-        <tr class="${show.compat.kind === "skip" || show.error ? "is-skip" : ""}" data-id="${escapeAttr(show.id)}" draggable="false">
+        <tr class="${rowClass}" data-id="${escapeAttr(show.id)}" draggable="false">
           <td>
-            <input type="checkbox" data-action="include" ${show.include ? "checked" : ""} ${show.error ? "disabled" : ""} aria-label="Include ${escapeAttr(show.name)}" />
+            <input type="checkbox" data-action="include" ${show.include ? "checked" : ""} ${selectable ? "" : "disabled"} aria-label="Include ${escapeAttr(show.name)}" />
           </td>
           <td>
             <button type="button" class="drag-handle" data-action="drag" title="Drag to reorder" aria-label="Reorder ${escapeAttr(show.name)}">⋮⋮</button>
             <span class="num">${index + 1}</span>
           </td>
-          <td class="name-cell" title="${escapeAttr(show.path)}">${escapeHtml(show.name)}</td>
+          <td class="name-cell" title="${escapeAttr(show.path)}">
+            ${escapeHtml(show.name)}
+            ${statusText ? `<span class="row-status">${escapeHtml(statusText)}</span>` : ""}
+          </td>
           <td class="num">${header ? header.channelCount : "—"}</td>
           <td class="num">${header ? header.stepTime : "—"}</td>
           <td class="num">${header ? header.frameCount : "—"}</td>
           <td class="num">${header ? formatDurationPrecise(header) : "—"}</td>
-          <td><span class="badge audio-${show.audio.kind}">${audioLabel}</span></td>
-          <td><span class="badge ${show.compat.kind}">${escapeHtml(show.compat.note)}</span></td>
+          <td><span class="badge ${audioClass}">${escapeHtml(audioLabel)}</span></td>
+          <td><span class="badge ${compat.kind}">${escapeHtml(compat.note)}</span></td>
           <td><span class="badge ${show.validation.ok ? "include" : "error"}" title="${escapeAttr(validTitle)}">${validLabel}</span></td>
         </tr>
       `;
@@ -280,7 +366,9 @@ function bindRowEvents() {
     const checkbox = row.querySelector('[data-action="include"]');
     checkbox?.addEventListener("change", () => {
       const show = state.shows.find((item) => item.id === id);
-      if (show) show.include = checkbox.checked;
+      if (!show) return;
+      show.include = checkbox.checked;
+      applyEligibility();
       render();
     });
 
@@ -342,14 +430,22 @@ async function joinAndDownload() {
     return;
   }
 
-  const channels = new Set(selected.map((show) => show.header.channelCount));
   const steps = new Set(selected.map((show) => show.header.stepTime));
-  if (channels.size > 1 || steps.size > 1) {
+  const channels = new Set(selected.map((show) => show.header.channelCount));
+  const mixedChannels = channels.size > 1;
+  if (steps.size > 1 || (mixedChannels && !state.upgrade48to200)) {
     setJoinStatus(
-      "Included shows must share the same channel count and step time. Uncheck mismatches, or sort/filter to a single compatible set.",
+      "Included shows must share the same step time, and the same channel count unless 48→200 upgrade is on.",
       "err"
     );
     return;
+  }
+  if (mixedChannels && state.upgrade48to200) {
+    const allowed = [...channels].every((count) => count === 48 || count === 200);
+    if (!allowed) {
+      setJoinStatus("48→200 upgrade only applies to 48-channel and 200-channel shows.", "err");
+      return;
+    }
   }
 
   const name = (els.outputName.value || "joined").replace(/\.fseq$/i, "").trim() || "joined";
@@ -361,7 +457,7 @@ async function joinAndDownload() {
     for (const show of selected) {
       buffers.push(await show.file.arrayBuffer());
     }
-    const joined = joinFseqBuffers(buffers);
+    const joined = joinFseqBuffers(buffers, joinOptions());
     const validation = validateFseq(joined.buffer);
     const blob = new Blob([joined.bytes], { type: "application/octet-stream" });
     const url = URL.createObjectURL(blob);
@@ -377,8 +473,9 @@ async function joinAndDownload() {
     const validText = validation.ok
       ? `Tesla validator checks passed (${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s).`
       : `Joined file failed validator: ${validation.errors.join("; ")}`;
+    const upgradeNote = state.upgrade48to200 ? " 48→200 upgrade applied." : "";
     setJoinStatus(
-      `Downloaded <strong>${escapeHtml(name)}.fseq</strong> — ${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText} Audio join coming next${missingAudio ? `; ${missingAudio} included show(s) have no matching mp3/wav` : ""}.`,
+      `Downloaded <strong>${escapeHtml(name)}.fseq</strong> — ${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote} Audio join coming next${missingAudio ? `; ${missingAudio} included show(s) have no matching mp3/wav` : ""}.`,
       validation.ok ? "ok" : "warn"
     );
     els.joinStatus.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -398,11 +495,14 @@ function loadSamples() {
     fileFrom("pumpkin-dance.wav", wav, "audio/wav"),
     fileFrom("finale.fseq", createSampleFseq({ frameCount: 80, fill: 33 })),
     fileFrom("slow-show.fseq", createSampleFseq({ frameCount: 40, stepTime: 50, fill: 44 })),
+    fileFrom("slow-show.wav", wav, "audio/wav"),
     fileFrom("cybertruck-wide.fseq", createSampleFseq({ frameCount: 60, channelCount: 200, fill: 55 })),
+    fileFrom("cybertruck-wide.wav", wav, "audio/wav"),
+    fileFrom("lonely-track.wav", wav, "audio/wav"),
   ];
   ingestFiles(files, { replace: true });
   setJoinStatus(
-    "Loaded in-browser sample shows (synthetic PSEQ bytes). Compatible 48ch / 20ms rows are checked; 50ms and 200-channel rows are skipped.",
+    "Loaded in-browser sample shows (synthetic PSEQ bytes). Compatible 48ch / 20ms rows with audio are checked. Missing-pair rows are red and locked; 50ms and mismatched 200ch rows stay unchecked and disabled unless you turn on 48→200 upgrade.",
     "info"
   );
 }
@@ -442,8 +542,19 @@ els.folderInput.addEventListener("change", () => {
 els.clearShows.addEventListener("click", clearShows);
 els.selectCompatible.addEventListener("click", () => {
   for (const show of state.shows) {
-    show.include = Boolean(show.compat.include && !show.error);
+    show.include = defaultInclude(show, joinOptions());
   }
+  applyEligibility();
+  render();
+});
+els.upgrade48to200?.addEventListener("change", () => {
+  state.upgrade48to200 = Boolean(els.upgrade48to200.checked);
+  if (state.upgrade48to200) {
+    for (const show of state.shows) {
+      if (defaultInclude(show, joinOptions())) show.include = true;
+    }
+  }
+  applyEligibility();
   render();
 });
 els.joinBtn.addEventListener("click", joinAndDownload);

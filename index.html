@@ -97,6 +97,13 @@
               Output name
               <input id="output-name" type="text" value="joined" spellcheck="false" />
             </label>
+            <label class="toggle" for="upgrade-48-to-200">
+              <input id="upgrade-48-to-200" type="checkbox" />
+              <span>
+                <strong>Upgrade 48ch → 200ch</strong>
+                <small>Pad unused channels with zeros so 48-channel / 20ms shows can join 200-channel / 20ms shows. Does not convert 20ms ↔ 50ms.</small>
+              </span>
+            </label>
             <button type="button" class="btn btn-primary" id="join-btn">
               Join &amp; download .fseq
             </button>
@@ -104,8 +111,10 @@
           <p class="join-note">
             Join follows the <strong>current table order</strong> of checked rows
             (sort a column or drag the handle to reorder). Only uncompressed V2
-            files with the same channel count and step time can be concatenated —
-            the same rules as <code>joiner-fseq.py</code>.
+            files with a matching pair (<code>.fseq</code> + audio) and the same
+            step time can be concatenated. Channel counts must match, or turn on
+            <strong>Upgrade 48ch → 200ch</strong> to pad 48-channel frames to 200.
+            Missing-pair and incompatible rows stay unchecked and locked.
             <strong>Audio join is coming next</strong> (ffmpeg.wasm). Download the
             FSEQ now and pair audio yourself, or use the Python CLI to concat MP3s.
           </p>
@@ -116,9 +125,10 @@
       <footer>
         Companion to
         <a href="https://github.com/aaronbarker/lightshow-joiner">aaronbarker/lightshow-joiner</a>.
-        Default include set is 48 channels / 20&nbsp;ms; 50&nbsp;ms and 200-channel
-        shows are skipped unless you check them and they still match each other.
-        Validation follows Tesla’s <code>validator.py</code> checks.
+        Default include set is 48 channels / 20&nbsp;ms with a matching audio file.
+        50&nbsp;ms shows stay skipped (no step-time conversion). 200-channel / 20ms
+        shows join the default set only when <strong>Upgrade 48ch → 200ch</strong>
+        is on. Validation follows Tesla’s <code>validator.py</code> checks.
       </footer>
     </main>
     <script type="module" src="./js/app.js"></script>
