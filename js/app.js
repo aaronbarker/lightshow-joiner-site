@@ -343,6 +343,7 @@ function render() {
       const rowClass = [
         errorRow ? "is-error" : "",
         !errorRow && compat.kind === "skip" ? "is-skip" : "",
+        show.include ? "" : "is-excluded",
       ]
         .filter(Boolean)
         .join(" ");

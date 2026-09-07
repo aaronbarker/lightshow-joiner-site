@@ -9,7 +9,7 @@
       content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260907-ui" />
+    <link rel="stylesheet" href="./styles.css?v=20260907-polish" />
   </head>
   <body>
     <main class="app">
@@ -75,12 +75,12 @@
           <table>
             <thead>
               <tr>
-                <th scope="col" class="col-tight">Include</th>
+                <th scope="col" class="col-tight" aria-label="Include"></th>
                 <th scope="col" class="col-tight" title="Drag to reorder join sequence">Order</th>
                 <th scope="col" class="sortable col-name" data-sort="name" aria-sort="ascending">Name</th>
                 <th scope="col" class="sortable col-tight" data-sort="channels" title="Channels">CH</th>
                 <th scope="col" class="sortable th-step" data-sort="stepTime"><span>Step</span><span class="th-unit">(ms)</span></th>
-                <th scope="col" class="sortable col-tight" data-sort="duration">Duration</th>
+                <th scope="col" class="sortable col-tight" data-sort="duration">Time</th>
                 <th scope="col" class="sortable col-tight" data-sort="audio">Audio</th>
                 <th scope="col" class="sortable col-compat" data-sort="compat">Compatibility</th>
               </tr>
@@ -89,40 +89,43 @@
           </table>
         </div>
 
+        <div class="join-options">
+          <label class="toggle" for="upgrade-48-to-200">
+            <input id="upgrade-48-to-200" type="checkbox" />
+            <span>
+              <strong>Upgrade 48ch → 200ch</strong>
+              <small>Pad unused channels with zeros so 48-channel / 20ms shows can join 200-channel / 20ms shows. Does not convert 20ms ↔ 50ms.</small>
+            </span>
+          </label>
+          <label class="toggle" for="convert-50-to-20">
+            <input id="convert-50-to-20" type="checkbox" />
+            <span>
+              <strong>Convert 50ms → 20ms</strong>
+              <small>Experimental. Expands frames so wall-clock duration stays matched to the audio (every 2×50ms frames become 5×20ms). Does not convert 20ms → 50ms.</small>
+            </span>
+          </label>
+        </div>
+        <p id="step-convert-warning" class="step-convert-warning" hidden>
+          <strong>Experimental 50ms → 20ms:</strong>
+          Total length stays matched to the audio. Lights may look slightly less
+          tight to the beat, and local timing can stutter on a ~10&nbsp;ms scale.
+          That is not runaway drift if duration is preserved.
+        </p>
+
         <div class="join-box">
+          <p class="combined-time" id="combined-time">
+            <strong>Total time of combined output:</strong>
+            <span id="combined-time-value">—</span>
+          </p>
           <div class="join-row">
             <label class="field">
               Output name
               <input id="output-name" type="text" value="joined" spellcheck="false" />
             </label>
-            <label class="toggle" for="upgrade-48-to-200">
-              <input id="upgrade-48-to-200" type="checkbox" />
-              <span>
-                <strong>Upgrade 48ch → 200ch</strong>
-                <small>Pad unused channels with zeros so 48-channel / 20ms shows can join 200-channel / 20ms shows. Does not convert 20ms ↔ 50ms.</small>
-              </span>
-            </label>
-            <label class="toggle" for="convert-50-to-20">
-              <input id="convert-50-to-20" type="checkbox" />
-              <span>
-                <strong>Convert 50ms → 20ms</strong>
-                <small>Experimental. Expands frames so wall-clock duration stays matched to the audio (every 2×50ms frames become 5×20ms). Does not convert 20ms → 50ms.</small>
-              </span>
-            </label>
             <button type="button" class="btn btn-primary" id="join-btn">
               Join &amp; download
             </button>
           </div>
-          <p id="step-convert-warning" class="step-convert-warning" hidden>
-            <strong>Experimental 50ms → 20ms:</strong>
-            Total length stays matched to the audio. Lights may look slightly less
-            tight to the beat, and local timing can stutter on a ~10&nbsp;ms scale.
-            That is not runaway drift if duration is preserved.
-          </p>
-          <p class="combined-time" id="combined-time">
-            <strong>Total time of combined output:</strong>
-            <span id="combined-time-value">—</span>
-          </p>
           <div id="join-status"></div>
           <p class="join-note">
             Join follows the <strong>current table order</strong> of checked rows
@@ -151,6 +154,6 @@
         <code>validator.py</code> checks.
       </footer>
     </main>
-    <script type="module" src="./js/app.js?v=20260907-ui"></script>
+    <script type="module" src="./js/app.js?v=20260907-polish"></script>
   </body>
 </html>

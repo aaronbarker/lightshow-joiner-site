@@ -330,6 +330,14 @@ tbody tr.is-dragging {
   opacity: 0.45;
 }
 
+tbody tr.is-excluded {
+  opacity: 0.4;
+}
+
+tbody tr.is-excluded input[type="checkbox"]:disabled {
+  opacity: 1;
+}
+
 tbody tr.is-skip {
   color: #d3d7df;
 }
@@ -536,6 +544,13 @@ input[type="checkbox"]:disabled {
   cursor: grabbing;
 }
 
+.join-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+}
+
 .join-box {
   margin-top: 18px;
   padding: 18px;
@@ -627,7 +642,7 @@ th.sortable:focus-visible,
 }
 
 .combined-time {
-  margin: 14px 0 0;
+  margin: 0 0 14px;
   font-size: 15px;
   color: var(--text);
 }
@@ -706,6 +721,7 @@ footer a {
     flex-direction: column;
   }
 
+  .join-options,
   .join-row {
     flex-direction: column;
     align-items: stretch;
