@@ -17,6 +17,8 @@ import {
   missingPairNote,
   isMissingPair,
   effectiveStepTime,
+  stepConvertChangeShiftStats,
+  SKIP_STEP_MS,
 } from "./fseq.js";
 import { joinShowAudio, preloadFfmpeg } from "./audio-join.js";
 import { createZipStore } from "./zip.js";
@@ -220,9 +222,27 @@ async function readShow(file, path, audioFiles) {
     validation,
     include: false,
     audio,
+    changeShift: null,
   };
+  show.changeShift = await readChangeShiftStats(file, header);
   show.include = defaultInclude(show, joinOptions());
   return show;
+}
+
+async function readChangeShiftStats(file, header) {
+  if (!file || !header || header.compression !== 0 || header.stepTime !== SKIP_STEP_MS) return null;
+  const channelCount = header.channelCount;
+  const frameCount = header.frameCount;
+  if (!channelCount || !frameCount || channelCount < 1 || frameCount < 1) return null;
+  const start = header.dataOffset;
+  const size = channelCount * frameCount;
+  if (!Number.isFinite(start) || !Number.isFinite(size) || start < 0 || size < 1) return null;
+  try {
+    const frameBuf = await file.slice(start, start + size).arrayBuffer();
+    return stepConvertChangeShiftStats(new Uint8Array(frameBuf), channelCount, frameCount);
+  } catch {
+    return null;
+  }
 }
 
 function sortShows() {
@@ -389,7 +409,7 @@ function render() {
             <span class="badge ${compat.kind}">${escapeHtml(compat.note)}</span>
             ${
               compat.shiftNote
-                ? `<span class="compat-shift">${escapeHtml(compat.shiftNote)}</span>`
+                ? `<span class="compat-shift" title="Visual light changes (bytes that differ from the previous frame). Odd-index changes start 10ms late on the 20ms grid.">${escapeHtml(compat.shiftNote)}</span>`
                 : ""
             }
           </td>
@@ -729,8 +749,31 @@ function loadSamples() {
     fileFrom("pumpkin-dance.fseq", createSampleFseq({ frameCount: 150, fill: 22 })),
     fileFrom("pumpkin-dance.wav", wav, "audio/wav"),
     fileFrom("finale.fseq", createSampleFseq({ frameCount: 80, fill: 33 })),
-    fileFrom("slow-show.fseq", createSampleFseq({ frameCount: 40, stepTime: 50, fill: 44 })),
+    fileFrom(
+      "slow-show.fseq",
+      createSampleFseq({
+        frameCount: 40,
+        stepTime: 50,
+        frameFill: (i) => {
+          // Mix of odd-index (late) and even-index (on-grid) visual changes → 3/11.
+          if (i >= 36) return 12;
+          if (i >= 32) return 11;
+          if (i >= 28) return 10;
+          if (i >= 24) return 9;
+          if (i >= 20) return 8;
+          if (i >= 16) return 7;
+          if (i >= 9) return 6;
+          if (i >= 8) return 5;
+          if (i >= 3) return 4;
+          if (i >= 2) return 3;
+          if (i >= 1) return 2;
+          return 1;
+        },
+      })
+    ),
     fileFrom("slow-show.wav", wav, "audio/wav"),
+    fileFrom("still-glow.fseq", createSampleFseq({ frameCount: 24, stepTime: 50, fill: 66 })),
+    fileFrom("still-glow.wav", wav, "audio/wav"),
     fileFrom("cybertruck-wide.fseq", createSampleFseq({ frameCount: 60, channelCount: 200, fill: 55 })),
     fileFrom("cybertruck-wide.wav", wav, "audio/wav"),
     fileFrom("lonely-track.wav", wav, "audio/wav"),

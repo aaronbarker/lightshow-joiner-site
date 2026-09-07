@@ -173,24 +173,70 @@ export function effectiveStepTime(stepTime, { convert50to20 = false } = {}) {
   return stepTime;
 }
 
-/**
- * Source frames that start 10ms late after 50→20 floor mapping
- * (`srcIndex = floor((i * 20) / 50)`). Odd-indexed source frames (1, 3, 5, …)
- * have ideal starts at 50, 150, 250, … which sit between 20ms ticks, so they
- * appear 10ms later. Even-indexed frames start on-grid.
- */
-export function stepConvertShiftStats(frameCount) {
-  const n = Number(frameCount);
-  const total = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
-  return { shifted: Math.floor(total / 2), total };
+function channelPayloadsDiffer(frameData, offA, offB, channelCount) {
+  for (let i = 0; i < channelCount; i += 1) {
+    if (frameData[offA + i] !== frameData[offB + i]) return true;
+  }
+  return false;
 }
 
-function attachStepConvertShiftNote(result, header, convert50to20) {
+/**
+ * Count visual light changes and how many start 10ms late after 50→20 mapping
+ * (`srcIndex = floor((out_i * 20) / 50)`).
+ *
+ * A visual change is source index i >= 1 whose `channelCount` bytes differ from
+ * frame i-1. Frame 0 is the initial state, not a change. A change at odd i
+ * has ideal start i*50, which is not on a 20ms grid, so it appears 10ms late.
+ *
+ * Returns null when frame bytes are missing or too short to scan.
+ */
+export function stepConvertChangeShiftStats(frameData, channelCount, frameCount) {
+  const channels = Number(channelCount);
+  const frames = Number(frameCount);
+  if (!Number.isFinite(channels) || !Number.isFinite(frames) || channels < 1 || frames < 1) {
+    return null;
+  }
+  const ch = Math.floor(channels);
+  const n = Math.floor(frames);
+  const expected = ch * n;
+  if (!frameData || frameData.byteLength < expected) {
+    return null;
+  }
+
+  let total = 0;
+  let shifted = 0;
+  for (let i = 1; i < n; i += 1) {
+    const prevOff = (i - 1) * ch;
+    const currOff = i * ch;
+    if (channelPayloadsDiffer(frameData, prevOff, currOff, ch)) {
+      total += 1;
+      if (i % 2 === 1) shifted += 1;
+    }
+  }
+  return { shifted, total };
+}
+
+/** Same scan from an uncompressed PSEQ buffer (header + frame payload). */
+export function stepConvertChangeShiftStatsFromBuffer(buffer) {
+  const header = parseFseqHeader(buffer);
+  if (header.compression !== 0) return null;
+  const frameData = new Uint8Array(buffer, header.dataOffset);
+  return stepConvertChangeShiftStats(frameData, header.channelCount, header.frameCount);
+}
+
+export function formatStepConvertChangeShiftNote(stats) {
+  if (!stats) return "";
+  if (stats.total === 0) return "no light changes (static)";
+  return `${stats.shifted}/${stats.total} changes start 10ms late`;
+}
+
+function attachStepConvertShiftNote(result, header, convert50to20, changeShift) {
   if (!result || result.kind !== "include" || !convert50to20 || header?.stepTime !== SKIP_STEP_MS) {
     return result;
   }
-  const { shifted, total } = stepConvertShiftStats(header.frameCount);
-  return { ...result, shiftNote: `${shifted}/${total} frames start 10ms late` };
+  const note = formatStepConvertChangeShiftNote(changeShift);
+  if (!note) return result;
+  return { ...result, shiftNote: note };
 }
 
 /**
@@ -201,7 +247,7 @@ function attachStepConvertShiftNote(result, header, convert50to20) {
  * When convert50to20 is on, 50ms shows are include-eligible as 20ms after
  * frame expansion (never the reverse 20→50).
  */
-export function compatibilityFor(header, { upgrade48to200 = false, convert50to20 = false } = {}) {
+export function compatibilityFor(header, { upgrade48to200 = false, convert50to20 = false, changeShift, frameData } = {}) {
   if (!header) {
     return { include: false, kind: "error", note: "Could not read header" };
   }
@@ -235,7 +281,10 @@ export function compatibilityFor(header, { upgrade48to200 = false, convert50to20
       note: `Skip: ${header.channelCount}ch / ${header.stepTime}ms (want 48ch / 20ms)`,
     };
   }
-  return attachStepConvertShiftNote(result, header, convert50to20);
+  const stats =
+    changeShift ??
+    (frameData ? stepConvertChangeShiftStats(frameData, header.channelCount, header.frameCount) : null);
+  return attachStepConvertShiftNote(result, header, convert50to20, stats);
 }
 
 export function isMissingPair(show) {
@@ -348,7 +397,13 @@ export function rowCompatibility(show, target, { upgrade48to200 = false, convert
       result = { ...base, include: false };
     }
   }
-  return attachStepConvertShiftNote(result, show.header, convert50to20);
+  const stats =
+    options.changeShift ??
+    show.changeShift ??
+    (show.frameData
+      ? stepConvertChangeShiftStats(show.frameData, show.header.channelCount, show.header.frameCount)
+      : null);
+  return attachStepConvertShiftNote(result, show.header, convert50to20, stats);
 }
 
 /**
@@ -585,6 +640,7 @@ export function createSampleFseq({
   minor = 0,
   compression = 0,
   fill = 1,
+  frameFill = null,
   dataOffset = 32,
 } = {}) {
   const expected = channelCount * frameCount;
@@ -604,7 +660,14 @@ export function createSampleFseq({
   view.setUint8(19, 0);
   view.setUint8(20, compression);
   setUint64LE(view, 24, 1);
-  bytes.fill(fill & 0xff, dataOffset);
+  if (typeof frameFill === "function") {
+    for (let i = 0; i < frameCount; i += 1) {
+      const start = dataOffset + i * channelCount;
+      bytes.fill(frameFill(i) & 0xff, start, start + channelCount);
+    }
+  } else {
+    bytes.fill(fill & 0xff, dataOffset);
+  }
   return bytes.buffer;
 }
 

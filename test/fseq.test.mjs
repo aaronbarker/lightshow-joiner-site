@@ -15,7 +15,9 @@ import {
   convertStepFrames,
   convertFseqStepTime,
   convertedFrameCount,
-  stepConvertShiftStats,
+  stepConvertChangeShiftStats,
+  stepConvertChangeShiftStatsFromBuffer,
+  formatStepConvertChangeShiftNote,
   effectiveStepTime,
   isHardBlocked,
   isSelectableForJoin,
@@ -76,12 +78,19 @@ test("compatibility matches CLI include/skip rules", () => {
   assert.equal(keep48up.include, true);
   assert.match(keep48up.note, /48ch \/ 20ms → 200ch/);
 
-  const keep50 = compatibilityFor(parseFseqHeader(createSampleFseq({ channelCount: 48, stepTime: 50 })), {
+  const keep50buf = createSampleFseq({
+    channelCount: 48,
+    stepTime: 50,
+    frameCount: 8,
+    frameFill: (i) => [1, 2, 3, 3, 4, 4, 4, 5][i],
+  });
+  const keep50 = compatibilityFor(parseFseqHeader(keep50buf), {
     convert50to20: true,
+    changeShift: stepConvertChangeShiftStatsFromBuffer(keep50buf),
   });
   assert.equal(keep50.include, true);
   assert.match(keep50.note, /50ms → 20ms/);
-  assert.equal(keep50.shiftNote, "25/50 frames start 10ms late");
+  assert.equal(keep50.shiftNote, "2/4 changes start 10ms late");
 
   const skip200at50 = compatibilityFor(parseFseqHeader(createSampleFseq({ channelCount: 200, stepTime: 50 })), {
     convert50to20: true,
@@ -96,21 +105,68 @@ test("compatibility matches CLI include/skip rules", () => {
   });
   assert.equal(keep200at50.include, true);
   assert.match(keep200at50.note, /200ch \/ 50ms → 20ms/);
-  assert.equal(keep200at50.shiftNote, "25/50 frames start 10ms late");
+  assert.equal(keep200at50.shiftNote, undefined);
 
   assert.equal(keep.shiftNote, undefined);
   assert.equal(skipStep.shiftNote, undefined);
   assert.equal(keep48up.shiftNote, undefined);
 });
 
-test("stepConvertShiftStats counts odd-indexed source frames as 10ms late", () => {
-  assert.deepEqual(stepConvertShiftStats(2474), { shifted: 1237, total: 2474 });
-  assert.deepEqual(stepConvertShiftStats(40), { shifted: 20, total: 40 });
-  assert.deepEqual(stepConvertShiftStats(5), { shifted: 2, total: 5 });
-  assert.deepEqual(stepConvertShiftStats(1), { shifted: 0, total: 1 });
-  assert.deepEqual(stepConvertShiftStats(0), { shifted: 0, total: 0 });
-  assert.deepEqual(stepConvertShiftStats(-3), { shifted: 0, total: 0 });
-  assert.deepEqual(stepConvertShiftStats(Number.NaN), { shifted: 0, total: 0 });
+function framesFromFills(fills, channelCount = 4) {
+  const data = new Uint8Array(fills.length * channelCount);
+  for (let i = 0; i < fills.length; i += 1) {
+    data.fill(fills[i] & 0xff, i * channelCount, (i + 1) * channelCount);
+  }
+  return data;
+}
+
+test("stepConvertChangeShiftStats counts visual changes, not source slots", () => {
+  const channels = 4;
+  const evenOnly = framesFromFills([1, 1, 2, 2, 3, 3, 4, 4], channels);
+  assert.deepEqual(stepConvertChangeShiftStats(evenOnly, channels, 8), { shifted: 0, total: 3 });
+
+  const oddOnly = framesFromFills([1, 2, 2, 3, 3, 4], channels);
+  assert.deepEqual(stepConvertChangeShiftStats(oddOnly, channels, 6), { shifted: 3, total: 3 });
+
+  const mix = framesFromFills([1, 2, 3, 3, 4], channels);
+  assert.deepEqual(stepConvertChangeShiftStats(mix, channels, 5), { shifted: 1, total: 3 });
+
+  const staticFrames = framesFromFills([7, 7, 7, 7], channels);
+  assert.deepEqual(stepConvertChangeShiftStats(staticFrames, channels, 4), { shifted: 0, total: 0 });
+  assert.equal(formatStepConvertChangeShiftNote({ shifted: 0, total: 0 }), "no light changes (static)");
+  assert.equal(formatStepConvertChangeShiftNote({ shifted: 12, total: 87 }), "12/87 changes start 10ms late");
+  assert.equal(formatStepConvertChangeShiftNote(null), "");
+
+  assert.equal(stepConvertChangeShiftStats(evenOnly, channels, 0), null);
+  assert.deepEqual(stepConvertChangeShiftStats(new Uint8Array(channels), channels, 1), { shifted: 0, total: 0 });
+  assert.equal(stepConvertChangeShiftStats(new Uint8Array(3), channels, 2), null);
+  assert.equal(stepConvertChangeShiftStats(null, channels, 4), null);
+
+  const evenBuf = createSampleFseq({
+    channelCount: channels,
+    frameCount: 8,
+    stepTime: 50,
+    frameFill: (i) => Math.floor(i / 2) + 1,
+  });
+  assert.deepEqual(stepConvertChangeShiftStatsFromBuffer(evenBuf), { shifted: 0, total: 3 });
+
+  const oddBuf = createSampleFseq({
+    channelCount: channels,
+    frameCount: 6,
+    stepTime: 50,
+    frameFill: (i) => Math.floor((i + 1) / 2) + 1,
+  });
+  assert.deepEqual(stepConvertChangeShiftStatsFromBuffer(oddBuf), { shifted: 3, total: 3 });
+
+  const staticBuf = createSampleFseq({ channelCount: channels, frameCount: 8, stepTime: 50, fill: 9 });
+  assert.deepEqual(stepConvertChangeShiftStatsFromBuffer(staticBuf), { shifted: 0, total: 0 });
+
+  const oneByte = new Uint8Array(channels * 2);
+  oneByte[channels + 2] = 9;
+  assert.deepEqual(stepConvertChangeShiftStats(oneByte, channels, 2), { shifted: 1, total: 1 });
+
+  const compressed = createSampleFseq({ channelCount: channels, frameCount: 4, stepTime: 50, compression: 1, frameFill: (i) => i });
+  assert.equal(stepConvertChangeShiftStatsFromBuffer(compressed), null);
 });
 
 function fakeShow({ channels = 48, stepTime = 20, include = false, audio = "wav", extra = {} } = {}) {
@@ -176,10 +232,18 @@ test("join target disables channel-mismatched checkboxes unless 48→200 upgrade
   const upgraded = rowCompatibility(show200, target, { upgrade48to200: true });
   assert.equal(upgraded.include, true);
 
-  const converted = rowCompatibility(show50, target, { convert50to20: true });
+  const converted = rowCompatibility(
+    { ...show50, changeShift: { shifted: 12, total: 87 } },
+    target,
+    { convert50to20: true }
+  );
   assert.equal(converted.include, true);
   assert.match(converted.note, /50ms → 20ms/);
-  assert.equal(converted.shiftNote, "25/50 frames start 10ms late");
+  assert.equal(converted.shiftNote, "12/87 changes start 10ms late");
+  assert.equal(
+    rowCompatibility({ ...show50, changeShift: { shifted: 0, total: 0 } }, target, { convert50to20: true }).shiftNote,
+    "no light changes (static)"
+  );
   assert.equal(rowCompatibility(show48, target, { convert50to20: true }).shiftNote, undefined);
   assert.equal(rowCompatibility(show50, target).shiftNote, undefined);
 });
