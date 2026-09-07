@@ -548,46 +548,251 @@ function setUint64LE(view, offset, value) {
   view.setUint32(offset + 4, Number((big >> 32n) & mask), true);
 }
 
+/**
+ * Apply the same optional 50→20 / 48→200 transforms used at join time.
+ * Order matches joinFseqBuffers: convert step first, then pad channels.
+ */
+export function prepareFseqForJoin(buffer, { upgrade48to200 = false, convert50to20 = false } = {}) {
+  let next = buffer;
+  if (convert50to20) {
+    const header = parseFseqHeader(next);
+    if (header.stepTime === SKIP_STEP_MS) {
+      next = convertFseqStepTime(next, DEFAULT_STEP_MS);
+    }
+  }
+  if (upgrade48to200) {
+    const header = parseFseqHeader(next);
+    if (header.channelCount === DEFAULT_CHANNELS) {
+      next = upgradeFseqChannels(next, SKIP_CHANNELS);
+    }
+  }
+  return next;
+}
+
+/**
+ * Uncompressed frame payload plus header. Trims trailing bytes past
+ * channelCount * frameCount (same as joiner-fseq.py).
+ */
+export function readUncompressedFrames(buffer, { label = "File" } = {}) {
+  const header = parseFseqHeader(buffer);
+  if (header.compression !== 0) {
+    throw new Error(`${label} is compressed. Tesla requires uncompressed V2.`);
+  }
+  const expectedSize = header.channelCount * header.frameCount;
+  const frameData = new Uint8Array(buffer, header.dataOffset);
+  if (frameData.byteLength < expectedSize) {
+    throw new Error(`${label}: not enough frame data`);
+  }
+  return {
+    header,
+    headerBytes: new Uint8Array(buffer, 0, header.dataOffset),
+    frameData: frameData.subarray(0, expectedSize),
+    trailingBytes: frameData.byteLength - expectedSize,
+  };
+}
+
+function firstDifferingByte(a, b) {
+  const n = Math.min(a.byteLength, b.byteLength);
+  for (let i = 0; i < n; i += 1) {
+    if (a[i] !== b[i]) return i;
+  }
+  if (a.byteLength !== b.byteLength) return n;
+  return -1;
+}
+
+function payloadActivity(frameData, channelCount) {
+  const total = frameData?.byteLength ?? 0;
+  if (!total || !channelCount) {
+    return { litBytes: 0, totalBytes: total, litRatio: 0, litPrimary: 0, litExtra: 0 };
+  }
+  const primary = Math.min(DEFAULT_CHANNELS, channelCount);
+  let lit = 0;
+  let litPrimary = 0;
+  for (let i = 0; i < total; i += 1) {
+    if (frameData[i] !== 0) {
+      lit += 1;
+      if (i % channelCount < primary) litPrimary += 1;
+    }
+  }
+  return {
+    litBytes: lit,
+    totalBytes: total,
+    litRatio: lit / total,
+    litPrimary,
+    litExtra: lit - litPrimary,
+  };
+}
+
+function activityDetail(activity, channelCount) {
+  if (!activity || !activity.totalBytes) return "No frame bytes to compare.";
+  const pct = (activity.litRatio * 100).toFixed(activity.litRatio > 0 && activity.litRatio < 0.01 ? 2 : 1);
+  let text = `${pct}% of bytes are non-zero`;
+  if (channelCount > DEFAULT_CHANNELS && activity.litBytes > 0) {
+    const extraPct = Math.round((activity.litExtra / activity.litBytes) * 100);
+    if (extraPct >= 70) {
+      text += `; ${extraPct}% of activity is on channels ${DEFAULT_CHANNELS + 1}–${channelCount}`;
+    }
+  }
+  return text;
+}
+
+function annotateJoinSegment(segment) {
+  if (segment.ok) {
+    segment.badge = "Join verified";
+    const activity = activityDetail(segment.activity, segment.channelCount);
+    segment.detail = segment.sourceTrailingBytes
+      ? `Matches source after join transforms. ${activity}. Source had ${segment.sourceTrailingBytes} trailing byte(s) past the declared frames (ignored, same as the CLI).`
+      : `Matches source after join transforms. ${activity}.`;
+    return segment;
+  }
+
+  const reasonBadges = {
+    mismatch: `Join mismatch · frame ${segment.firstMismatchFrame ?? "?"}`,
+    length: "Join mismatch · length",
+    channel_count: "Join mismatch · channels",
+    step_time: "Join mismatch · step",
+  };
+  segment.badge = reasonBadges[segment.reason] || "Join mismatch";
+  segment.detail = segment.note;
+  return segment;
+}
+
+/**
+ * Compare each source (after the same join transforms) to that slice of the
+ * joined FSEQ. Reports the first mismatched frame, length/channel/step errors,
+ * leftover frames in the output, and a light-activity hint for dark segments.
+ */
+export function validateJoinedSegments(joinedBuffer, sourceBuffers, options = {}) {
+  if (!joinedBuffer) {
+    throw new Error("Need a joined FSEQ buffer to validate");
+  }
+  const sources = sourceBuffers || [];
+  const joined = readUncompressedFrames(joinedBuffer, { label: "Joined file" });
+  const segments = [];
+  let byteOffset = 0;
+  let allOk = true;
+
+  for (let i = 0; i < sources.length; i += 1) {
+    const label = `Source ${i + 1}`;
+    const prepared = prepareFseqForJoin(sources[i], options);
+    const src = readUncompressedFrames(prepared, { label });
+    const startFrame = joined.header.channelCount
+      ? Math.floor(byteOffset / joined.header.channelCount)
+      : 0;
+    const segment = {
+      index: i,
+      ok: true,
+      reason: "ok",
+      note: "",
+      startFrame,
+      frameCount: src.header.frameCount,
+      sourceFrames: src.header.frameCount,
+      channelCount: src.header.channelCount,
+      stepTime: src.header.stepTime,
+      firstMismatchFrame: null,
+      firstMismatchJoinedFrame: null,
+      sourceTrailingBytes: src.trailingBytes,
+      activity: payloadActivity(src.frameData, src.header.channelCount),
+    };
+
+    if (src.header.channelCount !== joined.header.channelCount) {
+      segment.ok = false;
+      segment.reason = "channel_count";
+      segment.note = `${label} is ${src.header.channelCount}ch after transforms; joined file is ${joined.header.channelCount}ch`;
+    } else if (src.header.stepTime !== joined.header.stepTime) {
+      segment.ok = false;
+      segment.reason = "step_time";
+      segment.note = `${label} is ${src.header.stepTime}ms after transforms; joined file is ${joined.header.stepTime}ms`;
+    } else {
+      const need = src.frameData.byteLength;
+      const available = Math.max(0, joined.frameData.byteLength - byteOffset);
+      if (available < need) {
+        const availableFrames = Math.floor(available / src.header.channelCount);
+        segment.ok = false;
+        segment.reason = "length";
+        segment.note = `${label}: joined file has ${availableFrames} of ${src.header.frameCount} frames starting at frame ${startFrame}`;
+        byteOffset += available;
+      } else {
+        const slice = joined.frameData.subarray(byteOffset, byteOffset + need);
+        const diffAt = firstDifferingByte(slice, src.frameData);
+        if (diffAt >= 0) {
+          const localFrame = Math.floor(diffAt / src.header.channelCount);
+          segment.ok = false;
+          segment.reason = "mismatch";
+          segment.firstMismatchFrame = localFrame;
+          segment.firstMismatchJoinedFrame = startFrame + localFrame;
+          segment.note = `${label}: first mismatch at frame ${localFrame} (joined frame ${startFrame + localFrame})`;
+        }
+        byteOffset += need;
+      }
+    }
+
+    if (!segment.ok) allOk = false;
+    segments.push(annotateJoinSegment(segment));
+  }
+
+  const leftoverBytes = Math.max(0, joined.frameData.byteLength - byteOffset);
+  const leftoverFrames = joined.header.channelCount
+    ? Math.floor(leftoverBytes / joined.header.channelCount)
+    : 0;
+  if (leftoverFrames > 0) allOk = false;
+
+  const expectedFrames = segments.reduce((sum, item) => sum + item.sourceFrames, 0);
+  if (joined.header.frameCount !== expectedFrames) {
+    allOk = false;
+  }
+
+  return {
+    ok: allOk,
+    joined: {
+      frameCount: joined.header.frameCount,
+      channelCount: joined.header.channelCount,
+      stepTime: joined.header.stepTime,
+      dataBytes: joined.frameData.byteLength,
+    },
+    leftoverFrames,
+    leftoverBytes,
+    expectedFrames,
+    segments,
+  };
+}
+
+export function formatJoinVerifySummary(result, names = []) {
+  if (!result) return "";
+  const n = result.segments.length;
+  const passed = result.segments.filter((item) => item.ok).length;
+  const label = (index) => names[index] || `Show ${index + 1}`;
+  if (n === 0) return "Segment check: no source shows to compare.";
+  let text = result.ok
+    ? `Segment check: all ${n} included show${n === 1 ? "" : "s"} match the joined FSEQ.`
+    : `Segment check: ${passed}/${n} show${n === 1 ? "" : "s"} match.`;
+  if (!result.ok) {
+    const fails = result.segments
+      .filter((item) => !item.ok)
+      .map((item) => `${label(item.index)}: ${item.note.replace(/^Source \d+: /, "")}`);
+    if (fails.length) text += ` ${fails.join(" ")}`;
+  }
+  if (result.leftoverFrames > 0) {
+    text += ` Joined file has ${result.leftoverFrames} extra frame${result.leftoverFrames === 1 ? "" : "s"} after the sources.`;
+  } else if (result.joined?.frameCount !== result.expectedFrames) {
+    text += ` Joined header says ${result.joined.frameCount} frames; sources add up to ${result.expectedFrames}.`;
+  }
+  return text;
+}
+
 export function joinFseqBuffers(buffers, { upgrade48to200 = false, convert50to20 = false } = {}) {
   if (!buffers || buffers.length < 1) {
     throw new Error("Need at least one FSEQ file to join");
   }
 
-  const prepared = buffers.map((buffer) => {
-    let next = buffer;
-    if (convert50to20) {
-      const header = parseFseqHeader(next);
-      if (header.stepTime === SKIP_STEP_MS) {
-        next = convertFseqStepTime(next, DEFAULT_STEP_MS);
-      }
-    }
-    if (upgrade48to200) {
-      const header = parseFseqHeader(next);
-      if (header.channelCount === DEFAULT_CHANNELS) {
-        next = upgradeFseqChannels(next, SKIP_CHANNELS);
-      }
-    }
-    return next;
-  });
-
-  const parsed = prepared.map((buffer, index) => {
-    const header = parseFseqHeader(buffer);
-    if (header.compression !== 0) {
-      throw new Error(`File ${index + 1} is compressed. Tesla requires uncompressed V2.`);
-    }
-    if (header.major !== 2) {
+  const options = { upgrade48to200, convert50to20 };
+  const parsed = buffers.map((buffer, index) => {
+    const prepared = prepareFseqForJoin(buffer, options);
+    const item = readUncompressedFrames(prepared, { label: `File ${index + 1}` });
+    if (item.header.major !== 2) {
       // Match joiner-fseq.py: warn but continue. Caller can surface the version.
     }
-    const expectedSize = header.channelCount * header.frameCount;
-    const frameData = new Uint8Array(buffer, header.dataOffset);
-    if (frameData.byteLength < expectedSize) {
-      throw new Error(`File ${index + 1}: not enough frame data`);
-    }
-    return {
-      header,
-      headerBytes: new Uint8Array(buffer, 0, header.dataOffset),
-      frameData: frameData.subarray(0, expectedSize),
-    };
+    return item;
   });
 
   const ref = parsed[0].header;

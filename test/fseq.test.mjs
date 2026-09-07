@@ -24,6 +24,10 @@ import {
   defaultInclude,
   rowCompatibility,
   resolveJoinTarget,
+  prepareFseqForJoin,
+  readUncompressedFrames,
+  validateJoinedSegments,
+  formatJoinVerifySummary,
 } from "../js/fseq.js";
 
 test("parses uncompressed V2 PSEQ header fields", () => {
@@ -442,6 +446,118 @@ test("join converts 50ms shows to 20ms when the option is on", () => {
   assert.ok(data.subarray(10 * 48, 13 * 48).every((value) => value === 2));
   assert.ok(data.subarray(13 * 48).every((value) => value === 2));
   assert.equal(validateFseq(joined.buffer).ok, true);
+});
+
+test("validateJoinedSegments passes when every source segment matches", () => {
+  const a = createSampleFseq({ frameCount: 10, fill: 1 });
+  const b = createSampleFseq({ frameCount: 15, fill: 2 });
+  const joined = joinFseqBuffers([a, b]);
+  const result = validateJoinedSegments(joined.buffer, [a, b]);
+  assert.equal(result.ok, true);
+  assert.equal(result.segments.length, 2);
+  assert.equal(result.leftoverFrames, 0);
+  assert.equal(result.expectedFrames, 25);
+  assert.equal(result.segments[0].ok, true);
+  assert.equal(result.segments[0].badge, "Join verified");
+  assert.equal(result.segments[0].startFrame, 0);
+  assert.equal(result.segments[0].frameCount, 10);
+  assert.equal(result.segments[1].ok, true);
+  assert.equal(result.segments[1].startFrame, 10);
+  assert.equal(result.segments[1].frameCount, 15);
+  assert.match(formatJoinVerifySummary(result, ["intro.fseq", "dance.fseq"]), /all 2 included shows match/);
+});
+
+test("validateJoinedSegments reports the first mismatched frame", () => {
+  const a = createSampleFseq({ frameCount: 8, fill: 4 });
+  const b = createSampleFseq({ frameCount: 6, fill: 9 });
+  const joined = joinFseqBuffers([a, b]);
+  const header = parseFseqHeader(joined.buffer);
+  const bytes = new Uint8Array(joined.buffer);
+  // Corrupt frame 2 of show B (joined frame 10) on channel 3.
+  const corruptAt = header.dataOffset + (8 + 2) * header.channelCount + 3;
+  bytes[corruptAt] ^= 0xff;
+
+  const result = validateJoinedSegments(joined.buffer, [a, b]);
+  assert.equal(result.ok, false);
+  assert.equal(result.segments[0].ok, true);
+  assert.equal(result.segments[1].ok, false);
+  assert.equal(result.segments[1].reason, "mismatch");
+  assert.equal(result.segments[1].firstMismatchFrame, 2);
+  assert.equal(result.segments[1].firstMismatchJoinedFrame, 10);
+  assert.equal(result.segments[1].badge, "Join mismatch · frame 2");
+  assert.match(formatJoinVerifySummary(result, ["a.fseq", "b.fseq"]), /b\.fseq/);
+});
+
+test("validateJoinedSegments flags a truncated last segment", () => {
+  const a = createSampleFseq({ frameCount: 5, fill: 1 });
+  const b = createSampleFseq({ frameCount: 7, fill: 2 });
+  const joined = joinFseqBuffers([a, b]);
+  const header = parseFseqHeader(joined.buffer);
+  const keepFrames = 5 + 3;
+  const truncated = joined.buffer.slice(0, header.dataOffset + keepFrames * header.channelCount);
+  const view = new DataView(truncated);
+  view.setUint32(14, keepFrames, true);
+
+  const result = validateJoinedSegments(truncated, [a, b]);
+  assert.equal(result.ok, false);
+  assert.equal(result.segments[0].ok, true);
+  assert.equal(result.segments[1].ok, false);
+  assert.equal(result.segments[1].reason, "length");
+  assert.equal(result.segments[1].badge, "Join mismatch · length");
+});
+
+test("validateJoinedSegments follows 50→20 and 48→200 transforms", () => {
+  const slow48 = createSampleFseq({ channelCount: 48, frameCount: 2, stepTime: 50, fill: 4 });
+  const wide20 = createSampleFseq({ channelCount: 200, frameCount: 3, stepTime: 20, fill: 6 });
+  const options = { convert50to20: true, upgrade48to200: true };
+  const joined = joinFseqBuffers([slow48, wide20], options);
+
+  const preparedSlow = prepareFseqForJoin(slow48, options);
+  const preparedWide = prepareFseqForJoin(wide20, options);
+  assert.equal(parseFseqHeader(preparedSlow).channelCount, 200);
+  assert.equal(parseFseqHeader(preparedSlow).stepTime, 20);
+  assert.equal(parseFseqHeader(preparedSlow).frameCount, 5);
+  assert.equal(readUncompressedFrames(preparedWide).header.channelCount, 200);
+
+  const result = validateJoinedSegments(joined.buffer, [slow48, wide20], options);
+  assert.equal(result.ok, true);
+  assert.equal(result.segments[0].frameCount, 5);
+  assert.equal(result.segments[0].channelCount, 200);
+  assert.equal(result.segments[1].startFrame, 5);
+  assert.equal(result.segments[1].frameCount, 3);
+  assert.ok(result.segments[0].activity.litPrimary > 0);
+  assert.ok(result.segments[1].activity.litBytes > 0);
+});
+
+test("validateJoinedSegments reports a channel-count mismatch", () => {
+  const a = createSampleFseq({ channelCount: 48, frameCount: 4, fill: 1 });
+  const b = createSampleFseq({ channelCount: 200, frameCount: 4, fill: 2 });
+  const joined = joinFseqBuffers([a, createSampleFseq({ channelCount: 48, frameCount: 4, fill: 2 })]);
+  const result = validateJoinedSegments(joined.buffer, [a, b]);
+  assert.equal(result.ok, false);
+  assert.equal(result.segments[0].ok, true);
+  assert.equal(result.segments[1].ok, false);
+  assert.equal(result.segments[1].reason, "channel_count");
+  assert.equal(result.segments[1].badge, "Join mismatch · channels");
+});
+
+test("validateJoinedSegments catches a nine-show last-segment swap", () => {
+  const sources = Array.from({ length: 9 }, (_, i) =>
+    createSampleFseq({ frameCount: 4 + i, fill: (i + 1) * 11 })
+  );
+  const joined = joinFseqBuffers(sources);
+  const good = validateJoinedSegments(joined.buffer, sources);
+  assert.equal(good.ok, true);
+  assert.equal(good.segments.length, 9);
+  assert.equal(good.segments[8].startFrame, sources.slice(0, 8).reduce((sum, buf) => sum + parseFseqHeader(buf).frameCount, 0));
+
+  const swapped = [...sources.slice(0, 8), createSampleFseq({ frameCount: 12, fill: 7 })];
+  const bad = validateJoinedSegments(joined.buffer, swapped);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.segments[7].ok, true);
+  assert.equal(bad.segments[8].ok, false);
+  assert.equal(bad.segments[8].reason, "mismatch");
+  assert.equal(bad.segments[8].firstMismatchFrame, 0);
 });
 
 test("join can combine 50→20 conversion with 48→200 upgrade", () => {

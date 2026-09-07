@@ -10,12 +10,12 @@ The Python CLI stays in its own repo. This site does not modify that project.
 
 1. Open the site (local preview or GitHub Pages).
 2. Drag a lightshow folder onto the drop zone, or use **Choose files** / **Choose folder**. Folder pick needs a browser that supports `webkitdirectory` (desktop Chrome and Safari do).
-3. Review the table: name (play/pause plus a scrubber when a row has audio), channels, step time, duration (`m:ss`), audio match (`mp3` / `wav` / `missing`), and compatibility. Tesla validator still runs; a failed source shows a **Validator failed** badge under the title. Join-time validation is unchanged.
+3. Review the table: name (play/pause plus a scrubber when a row has audio), channels, step time, duration (`m:ss`), audio match (`mp3` / `wav` / `missing`), and compatibility. Tesla validator still runs; a failed source shows a **Validator failed** badge under the title. After **Join & download**, each included row also gets a **Join verified** or **Join mismatch** badge — the joined FSEQ is compared segment-by-segment to that show’s frames (after the same 48→200 / 50→20 transforms).
 4. Compatible shows default to **include** (48 channels + 20 ms, with matching audio). **50 ms** shows stay skipped unless you turn on experimental **Convert 50ms → 20ms**. **200-channel** shows stay skipped unless you turn on **Upgrade 48ch → 200ch**.
 5. Missing pairs (`.fseq` without audio, or audio without `.fseq`) are shown as **red error rows** with the include checkbox disabled. Incompatible shows (wrong step time, channel mismatch vs the current join target, compressed/invalid) also have the checkbox locked.
 6. Sort by clicking column headers (starts as name ascending). Drag the `⋮⋮` handle to set join order.
 7. Watch **Total time of combined output** — it sums the currently checked, join-eligible rows and updates when you change includes, sort/order, 48→200 upgrade, or 50→20 conversion.
-8. **Join & download** concatenates frame data (same as `joiner-fseq.py`) and joins matching audio in that same table order. WAV files are converted to MP3 in the browser (ffmpeg.wasm), then MP3s are concatenated. You get a `.zip` with `name.fseq` + `name.mp3`. If audio join fails, the FSEQ still downloads and the error is shown.
+8. **Join & download** concatenates frame data (same as `joiner-fseq.py`) and joins matching audio in that same table order. WAV files are converted to MP3 in the browser (ffmpeg.wasm), then MP3s are concatenated. You get a `.zip` with `name.fseq` + `name.mp3`. If audio join fails, the FSEQ still downloads and the error is shown. The joiner then checks each included show against that slice of the output and shows **Join verified** or **Join mismatch** under the name (first mismatched frame, or a length/channel/step error).
 
 The first audio join downloads the ffmpeg.wasm engine (~32 MB from jsDelivr) and caches it in this browser. Later joins reuse that cache. Nothing is uploaded.
 

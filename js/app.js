@@ -18,6 +18,8 @@ import {
   isMissingPair,
   effectiveStepTime,
   stepConvertChangeShiftStats,
+  validateJoinedSegments,
+  formatJoinVerifySummary,
   SKIP_STEP_MS,
 } from "./fseq.js";
 import { joinShowAudio, preloadFfmpeg } from "./audio-join.js";
@@ -189,6 +191,7 @@ async function ingestFiles(fileList, { replace = false } = {}) {
     }
   }
   applyEligibility();
+  clearJoinVerify();
 
   state.sortKey = "name";
   state.sortDir = "asc";
@@ -223,6 +226,7 @@ async function readShow(file, path, audioFiles) {
     include: false,
     audio,
     changeShift: null,
+    joinVerify: null,
   };
   show.changeShift = await readChangeShiftStats(file, header);
   show.include = defaultInclude(show, joinOptions());
@@ -297,6 +301,7 @@ function orphanAudioShows() {
       include: false,
       audio: { kind, file },
       orphanAudio: true,
+      joinVerify: null,
     });
   }
   return orphans;
@@ -304,6 +309,12 @@ function orphanAudioShows() {
 
 function displayShows() {
   return [...state.shows, ...orphanAudioShows()];
+}
+
+function clearJoinVerify() {
+  for (const show of state.shows) {
+    show.joinVerify = null;
+  }
 }
 
 function applyEligibility({ selectCompatible = false } = {}) {
@@ -380,6 +391,9 @@ function render() {
         statusText ? `<span class="row-status">${escapeHtml(statusText)}</span>` : "",
         validatorFailed
           ? `<span class="badge error validator-fail" title="${escapeAttr(validTitle)}">Validator failed</span>`
+          : "",
+        show.joinVerify
+          ? `<span class="badge ${show.joinVerify.ok ? "include" : "error"} join-verify" title="${escapeAttr(show.joinVerify.detail)}">${escapeHtml(show.joinVerify.badge)}</span>`
           : "",
       ]
         .filter(Boolean)
@@ -554,6 +568,7 @@ function bindRowEvents() {
       const show = state.shows.find((item) => item.id === id);
       if (!show) return;
       show.include = checkbox.checked;
+      clearJoinVerify();
       applyEligibility();
       render();
     });
@@ -614,6 +629,7 @@ function bindRowEvents() {
       const [moved] = state.shows.splice(fromIndex, 1);
       state.shows.splice(toIndex, 0, moved);
       state.customOrder = true;
+      clearJoinVerify();
       render();
     });
   }
@@ -654,13 +670,15 @@ function downloadBlob(data, filename, type) {
   URL.revokeObjectURL(url);
 }
 
-function fseqSummary(selected, joined, validation) {
+function fseqSummary(selected, joined, validation, verify) {
   const validText = validation.ok
     ? `Tesla validator checks passed (${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s).`
     : `Joined file failed validator: ${validation.errors.join("; ")}`;
   const upgradeNote = state.upgrade48to200 ? " 48→200 upgrade applied." : "";
   const convertNote = state.convert50to20 ? " 50→20 step conversion applied." : "";
-  return `${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote}${convertNote}`;
+  const names = selected.map((show) => show.name);
+  const verifyText = verify ? ` ${formatJoinVerifySummary(verify, names)}` : "";
+  return `${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote}${convertNote}${verifyText}`;
 }
 
 async function joinAndDownload() {
@@ -692,6 +710,7 @@ async function joinAndDownload() {
   const name = (els.outputName.value || "joined").replace(/\.(fseq|zip|mp3)$/i, "").trim() || "joined";
   els.joinBtn.disabled = true;
   els.joinBtn.textContent = "Joining…";
+  clearJoinVerify();
   setJoinStatus("Reading sequences and concatenating frames…", "info", { scroll: true });
 
   try {
@@ -701,7 +720,14 @@ async function joinAndDownload() {
     }
     const joined = joinFseqBuffers(buffers, joinOptions());
     const validation = validateFseq(joined.buffer);
-    const summary = fseqSummary(selected, joined, validation);
+    const verify = validateJoinedSegments(joined.buffer, buffers, joinOptions());
+    for (let i = 0; i < selected.length; i += 1) {
+      selected[i].joinVerify = verify.segments[i] || null;
+    }
+    render();
+    els.joinBtn.disabled = true;
+    els.joinBtn.textContent = "Joining…";
+    const summary = fseqSummary(selected, joined, validation, verify);
 
     let audioResult = null;
     let audioError = null;
@@ -722,7 +748,7 @@ async function joinAndDownload() {
         : "";
       setJoinStatus(
         `Downloaded <strong>${escapeHtml(name)}.zip</strong> containing <strong>${escapeHtml(name)}.fseq</strong> and <strong>${escapeHtml(name)}.mp3</strong> — ${summary}${wavNote}`,
-        validation.ok ? "ok" : "warn"
+        validation.ok && verify.ok ? "ok" : "warn"
       );
     } else {
       downloadBlob(joined.bytes, `${name}.fseq`, "application/octet-stream");
@@ -823,6 +849,7 @@ els.selectCompatible.addEventListener("click", () => {
   for (const show of state.shows) {
     show.include = defaultInclude(show, joinOptions());
   }
+  clearJoinVerify();
   applyEligibility();
   render();
 });
@@ -830,6 +857,7 @@ function applyJoinOptionChange() {
   for (const show of state.shows) {
     show.include = defaultInclude(show, joinOptions());
   }
+  clearJoinVerify();
   applyEligibility();
   render();
 }
