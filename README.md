@@ -10,7 +10,7 @@ The Python CLI stays in its own repo. This site does not modify that project.
 
 1. Open the site (local preview or GitHub Pages).
 2. Drag a lightshow folder onto the drop zone, or use **Choose files** / **Choose folder**. Folder pick needs a browser that supports `webkitdirectory` (desktop Chrome and Safari do).
-3. Review the table: name, channels, step time, frames, duration, audio match (`mp3` / `wav` / `missing`), compatibility, and Tesla-style validator result.
+3. Review the table: name (play/pause plus a scrubber when a row has audio), channels, step time, duration (`m:ss`), audio match (`mp3` / `wav` / `missing`), and compatibility. Tesla validator still runs; a failed source shows a **Validator failed** badge under the title. Join-time validation is unchanged.
 4. Compatible shows default to **include** (48 channels + 20 ms, with matching audio). **50 ms** shows stay skipped unless you turn on experimental **Convert 50ms → 20ms**. **200-channel** shows stay skipped unless you turn on **Upgrade 48ch → 200ch**.
 5. Missing pairs (`.fseq` without audio, or audio without `.fseq`) are shown as **red error rows** with the include checkbox disabled. Incompatible shows (wrong step time, channel mismatch vs the current join target, compressed/invalid) also have the checkbox locked.
 6. Sort by clicking column headers (starts as name ascending). Drag the `⋮⋮` handle to set join order.

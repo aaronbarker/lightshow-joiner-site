@@ -4,7 +4,7 @@ import {
   joinFseqBuffers,
   createSampleFseq,
   createSilentWav,
-  formatDurationPrecise,
+  formatDuration,
   formatDurationWords,
   totalIncludedDurationMs,
   durationMs,
@@ -22,6 +22,17 @@ import { joinShowAudio, preloadFfmpeg } from "./audio-join.js";
 import { createZipStore } from "./zip.js";
 
 const ACCEPTED = new Set(["fseq", "mp3", "wav"]);
+const PREVIEW_ICON_PLAY =
+  '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M5 3.15v9.7L13.2 8 5 3.15z"/></svg>';
+const PREVIEW_ICON_PAUSE =
+  '<svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M4 3h3.1v10H4zm4.9 0H12v10H8.9z"/></svg>';
+
+const preview = {
+  showId: null,
+  audio: new Audio(),
+  objectUrl: null,
+  seeking: false,
+};
 
 const state = {
   shows: [],
@@ -140,6 +151,7 @@ async function ingestFiles(fileList, { replace = false } = {}) {
   }
 
   if (replace) {
+    stopPreview();
     state.shows = [];
     state.audioByKey.clear();
   }
@@ -222,7 +234,6 @@ function sortShows() {
     if (key === "name") return show.name.toLowerCase();
     if (key === "channels") return show.header?.channelCount ?? -1;
     if (key === "stepTime") return show.header?.stepTime ?? -1;
-    if (key === "frames") return show.header?.frameCount ?? -1;
     if (key === "duration") return show.header ? durationMs(show.header) : -1;
     if (key === "audio") return show.audio.kind;
     if (key === "compat") {
@@ -293,6 +304,7 @@ function render() {
   const hasShows = rows.length > 0;
   els.results.classList.toggle("is-visible", hasShows);
   if (!hasShows) {
+    stopPreview();
     els.rows.innerHTML = "";
     els.stats.innerHTML = "";
     updateCombinedTime([]);
@@ -325,11 +337,6 @@ function render() {
           ? "missing pair"
           : show.audio.kind;
       const audioClass = show.audio.kind === "missing" || show.orphanAudio ? "error" : `audio-${show.audio.kind}`;
-      const validLabel = show.validation.ok
-        ? show.validation.warnings?.length
-          ? "warn"
-          : "pass"
-        : "fail";
       const validTitle = show.validation.ok
         ? show.validation.warnings?.join(" ") || "Tesla validator checks passed"
         : show.validation.errors.join(" ");
@@ -340,26 +347,44 @@ function render() {
         .filter(Boolean)
         .join(" ");
       const statusText = pairNote || show.error || "";
+      const canPreview = hasPreviewableAudio(show);
+      const validatorFailed = !show.validation.ok && !show.orphanAudio;
+      const playButton = canPreview
+        ? `<button type="button" class="preview-play" data-action="preview" title="Play" aria-label="Play ${escapeAttr(show.name)}" aria-pressed="false">${PREVIEW_ICON_PLAY}</button>`
+        : "";
+      const scrubber = canPreview
+        ? `<input type="range" class="preview-scrubber" min="0" max="1000" value="0" step="1" hidden aria-label="Seek ${escapeAttr(show.name)}" />`
+        : "";
+      const metaBits = [
+        statusText ? `<span class="row-status">${escapeHtml(statusText)}</span>` : "",
+        validatorFailed
+          ? `<span class="badge error validator-fail" title="${escapeAttr(validTitle)}">Validator failed</span>`
+          : "",
+      ]
+        .filter(Boolean)
+        .join("");
       return `
         <tr class="${rowClass}" data-id="${escapeAttr(show.id)}" draggable="false">
-          <td>
+          <td class="col-tight">
             <input type="checkbox" data-action="include" ${show.include ? "checked" : ""} ${selectable ? "" : "disabled"} aria-label="Include ${escapeAttr(show.name)}" />
           </td>
-          <td>
+          <td class="col-tight">
             <button type="button" class="drag-handle" data-action="drag" title="Drag to reorder" aria-label="Reorder ${escapeAttr(show.name)}">⋮⋮</button>
             <span class="num">${index + 1}</span>
           </td>
-          <td class="name-cell" title="${escapeAttr(show.path)}">
-            ${escapeHtml(show.name)}
-            ${statusText ? `<span class="row-status">${escapeHtml(statusText)}</span>` : ""}
+          <td class="name-cell">
+            <div class="name-main">
+              ${playButton}
+              <span class="name-text" title="${escapeAttr(show.path)}">${escapeHtml(show.name)}</span>
+            </div>
+            ${metaBits ? `<div class="name-meta">${metaBits}</div>` : ""}
+            ${scrubber}
           </td>
-          <td class="num">${header ? header.channelCount : "—"}</td>
-          <td class="num">${header ? header.stepTime : "—"}</td>
-          <td class="num">${header ? header.frameCount : "—"}</td>
-          <td class="num">${header ? formatDurationPrecise(header) : "—"}</td>
-          <td><span class="badge ${audioClass}">${escapeHtml(audioLabel)}</span></td>
-          <td><span class="badge ${compat.kind}">${escapeHtml(compat.note)}</span></td>
-          <td><span class="badge ${show.validation.ok ? "include" : "error"}" title="${escapeAttr(validTitle)}">${validLabel}</span></td>
+          <td class="num col-tight">${header ? header.channelCount : "—"}</td>
+          <td class="num col-tight">${header ? header.stepTime : "—"}</td>
+          <td class="num col-tight">${header ? formatDuration(durationMs(header)) : "—"}</td>
+          <td class="col-tight"><span class="badge ${audioClass}">${escapeHtml(audioLabel)}</span></td>
+          <td class="compat-cell"><span class="badge ${compat.kind}">${escapeHtml(compat.note)}</span></td>
         </tr>
       `;
     })
@@ -374,6 +399,10 @@ function render() {
   updateCombinedTime(included);
   updateStepConvertWarning();
   bindRowEvents();
+  if (preview.showId && !rows.some((show) => show.id === preview.showId)) {
+    stopPreview();
+  }
+  syncPreviewUi();
 }
 
 function updateStepConvertWarning() {
@@ -392,6 +421,103 @@ function updateCombinedTime(included = includedShows()) {
   els.combinedTimeValue.classList.remove("is-empty");
 }
 
+function hasPreviewableAudio(show) {
+  return Boolean(show?.audio?.file && (show.audio.kind === "mp3" || show.audio.kind === "wav"));
+}
+
+function stopPreview() {
+  preview.audio.pause();
+  preview.audio.removeAttribute("src");
+  try {
+    preview.audio.load();
+  } catch {
+    // Ignore browsers that throw while resetting an empty media element.
+  }
+  if (preview.objectUrl) {
+    URL.revokeObjectURL(preview.objectUrl);
+    preview.objectUrl = null;
+  }
+  preview.showId = null;
+  preview.seeking = false;
+  syncPreviewUi();
+}
+
+function isPreviewPlaying() {
+  return Boolean(preview.showId && !preview.audio.paused && !preview.audio.ended);
+}
+
+function updateScrubber() {
+  if (!preview.showId || preview.seeking) return;
+  const row = els.rows.querySelector(`tr[data-id="${CSS.escape(preview.showId)}"]`);
+  const scrubber = row?.querySelector(".preview-scrubber");
+  if (!scrubber) return;
+  const duration = preview.audio.duration;
+  if (!Number.isFinite(duration) || duration <= 0) {
+    scrubber.value = "0";
+    return;
+  }
+  scrubber.value = String(Math.round((preview.audio.currentTime / duration) * 1000));
+}
+
+function syncPreviewUi() {
+  const playing = isPreviewPlaying();
+  for (const row of els.rows.querySelectorAll("tr")) {
+    const active = row.dataset.id === preview.showId;
+    row.classList.toggle("is-previewing", active);
+    const scrubber = row.querySelector(".preview-scrubber");
+    if (scrubber) scrubber.hidden = !active;
+    const button = row.querySelector('[data-action="preview"]');
+    if (!button) continue;
+    const thisPlaying = active && playing;
+    const label = row.querySelector(".name-text")?.textContent || "audio";
+    button.classList.toggle("is-playing", thisPlaying);
+    button.setAttribute("aria-pressed", thisPlaying ? "true" : "false");
+    button.setAttribute("aria-label", thisPlaying ? `Pause ${label}` : `Play ${label}`);
+    button.title = thisPlaying ? "Pause" : "Play";
+    button.innerHTML = thisPlaying ? PREVIEW_ICON_PAUSE : PREVIEW_ICON_PLAY;
+  }
+  updateScrubber();
+}
+
+async function togglePreview(show) {
+  if (!hasPreviewableAudio(show)) return;
+  if (preview.showId === show.id) {
+    if (preview.audio.paused) {
+      try {
+        await preview.audio.play();
+      } catch {
+        // Autoplay or decode errors stay silent in the row UI.
+      }
+    } else {
+      preview.audio.pause();
+    }
+    syncPreviewUi();
+    return;
+  }
+
+  const previousUrl = preview.objectUrl;
+  preview.showId = show.id;
+  preview.objectUrl = URL.createObjectURL(show.audio.file);
+  preview.audio.src = preview.objectUrl;
+  if (previousUrl) URL.revokeObjectURL(previousUrl);
+  syncPreviewUi();
+  try {
+    await preview.audio.play();
+  } catch {
+    // Leave the scrubber visible so the user can retry play.
+  }
+  syncPreviewUi();
+}
+
+preview.audio.addEventListener("timeupdate", updateScrubber);
+preview.audio.addEventListener("durationchange", updateScrubber);
+preview.audio.addEventListener("play", syncPreviewUi);
+preview.audio.addEventListener("pause", syncPreviewUi);
+preview.audio.addEventListener("ended", () => {
+  preview.audio.currentTime = 0;
+  syncPreviewUi();
+});
+
 function bindRowEvents() {
   for (const row of els.rows.querySelectorAll("tr")) {
     const id = row.dataset.id;
@@ -403,6 +529,36 @@ function bindRowEvents() {
       applyEligibility();
       render();
     });
+
+    const previewButton = row.querySelector('[data-action="preview"]');
+    previewButton?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const show = displayShows().find((item) => item.id === id);
+      if (show) togglePreview(show);
+    });
+
+    const scrubber = row.querySelector(".preview-scrubber");
+    if (scrubber) {
+      const seekFromScrubber = () => {
+        if (preview.showId !== id) return;
+        const duration = preview.audio.duration;
+        if (!Number.isFinite(duration) || duration <= 0) return;
+        preview.audio.currentTime = (Number(scrubber.value) / 1000) * duration;
+      };
+      scrubber.addEventListener("pointerdown", () => {
+        preview.seeking = true;
+      });
+      scrubber.addEventListener("input", seekFromScrubber);
+      const endSeek = () => {
+        preview.seeking = false;
+        seekFromScrubber();
+        updateScrubber();
+      };
+      scrubber.addEventListener("pointerup", endSeek);
+      scrubber.addEventListener("pointercancel", endSeek);
+      scrubber.addEventListener("change", endSeek);
+    }
 
     const handle = row.querySelector('[data-action="drag"]');
     handle?.addEventListener("pointerdown", () => {
@@ -558,7 +714,7 @@ async function joinAndDownload() {
 }
 
 function loadSamples() {
-  const wav = createSilentWav({ durationSec: 0.25 });
+  const wav = createSilentWav({ durationSec: 4 });
   const files = [
     fileFrom("halloween-intro.fseq", createSampleFseq({ frameCount: 100, fill: 11 })),
     fileFrom("halloween-intro.wav", wav, "audio/wav"),
@@ -583,6 +739,7 @@ function fileFrom(name, buffer, type = "application/octet-stream") {
 }
 
 function clearShows() {
+  stopPreview();
   state.shows = [];
   state.audioByKey.clear();
   state.customOrder = false;

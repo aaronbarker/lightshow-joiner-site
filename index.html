@@ -9,7 +9,7 @@
       content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=20260907-ui" />
   </head>
   <body>
     <main class="app">
@@ -75,16 +75,14 @@
           <table>
             <thead>
               <tr>
-                <th scope="col">Include</th>
-                <th scope="col" title="Drag to reorder join sequence">Order</th>
-                <th scope="col" class="sortable" data-sort="name" aria-sort="ascending">Name</th>
-                <th scope="col" class="sortable" data-sort="channels">Channels</th>
-                <th scope="col" class="sortable" data-sort="stepTime">Step (ms)</th>
-                <th scope="col" class="sortable" data-sort="frames">Frames</th>
-                <th scope="col" class="sortable" data-sort="duration">Duration</th>
-                <th scope="col" class="sortable" data-sort="audio">Audio</th>
-                <th scope="col" class="sortable" data-sort="compat">Compatibility</th>
-                <th scope="col" class="sortable" data-sort="valid">Validator</th>
+                <th scope="col" class="col-tight">Include</th>
+                <th scope="col" class="col-tight" title="Drag to reorder join sequence">Order</th>
+                <th scope="col" class="sortable col-name" data-sort="name" aria-sort="ascending">Name</th>
+                <th scope="col" class="sortable col-tight" data-sort="channels" title="Channels">CH</th>
+                <th scope="col" class="sortable th-step" data-sort="stepTime"><span>Step</span><span class="th-unit">(ms)</span></th>
+                <th scope="col" class="sortable col-tight" data-sort="duration">Duration</th>
+                <th scope="col" class="sortable col-tight" data-sort="audio">Audio</th>
+                <th scope="col" class="sortable col-compat" data-sort="compat">Compatibility</th>
               </tr>
             </thead>
             <tbody id="show-rows"></tbody>
@@ -153,6 +151,6 @@
         <code>validator.py</code> checks.
       </footer>
     </main>
-    <script type="module" src="./js/app.js"></script>
+    <script type="module" src="./js/app.js?v=20260907-ui"></script>
   </body>
 </html>
