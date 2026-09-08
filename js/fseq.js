@@ -16,6 +16,13 @@
  *   24-31 unique id uint64
  */
 
+import {
+  analyzeClosureUsage,
+  buildResetTailFrames,
+  emptyResetPlan,
+  planClosureResets,
+} from "./closures.js";
+
 export const PSEQ_MAGIC = "PSEQ";
 export const DEFAULT_CHANNELS = 48;
 export const DEFAULT_STEP_MS = 20;
@@ -67,6 +74,21 @@ export function durationMs(header) {
   return header.frameCount * header.stepTime;
 }
 
+/** Frame count after the same 50→20 expand used at join. 48→200 does not change frames. */
+export function joinFrameCount(header, { convert50to20 = false } = {}) {
+  if (!header) return 0;
+  if (convert50to20 && header.stepTime === SKIP_STEP_MS) {
+    return convertedFrameCount(header.frameCount, header.stepTime, DEFAULT_STEP_MS);
+  }
+  return header.frameCount;
+}
+
+/** Wall-clock duration after join transforms (50→20 preserves length except odd-frame rounding). */
+export function joinDurationMs(header, options = {}) {
+  if (!header) return 0;
+  return joinFrameCount(header, options) * effectiveStepTime(header.stepTime, options);
+}
+
 export function formatDuration(ms) {
   if (!Number.isFinite(ms) || ms < 0) return "—";
   const totalSec = Math.round(ms / 1000);
@@ -106,10 +128,10 @@ export function formatDurationWords(ms) {
 }
 
 /** Sum FSEQ durations for the same row set the join button uses. */
-export function totalIncludedDurationMs(shows) {
-  return (shows || []).reduce((sum, show) => {
+export function totalIncludedDurationMs(shows, options = {}, tails = []) {
+  return (shows || []).reduce((sum, show, index) => {
     if (!show?.header) return sum;
-    return sum + durationMs(show.header);
+    return sum + joinDurationMs(show.header, options) + (tails[index]?.durationMs || 0);
   }, 0);
 }
 
@@ -668,14 +690,18 @@ export function validateJoinedSegments(joinedBuffer, sourceBuffers, options = {}
   }
   const sources = sourceBuffers || [];
   const joined = readUncompressedFrames(joinedBuffer, { label: "Joined file" });
+  const preparedSources = sources.map((buffer, index) =>
+    readUncompressedFrames(prepareFseqForJoin(buffer, options), { label: `Source ${index + 1}` })
+  );
+  const resetPlan = resetPlanForParsed(preparedSources, options);
   const segments = [];
   let byteOffset = 0;
   let allOk = true;
 
-  for (let i = 0; i < sources.length; i += 1) {
+  for (let i = 0; i < preparedSources.length; i += 1) {
     const label = `Source ${i + 1}`;
-    const prepared = prepareFseqForJoin(sources[i], options);
-    const src = readUncompressedFrames(prepared, { label });
+    const src = preparedSources[i];
+    const tailFrames = resetPlan.tails[i]?.frameCount || 0;
     const startFrame = joined.header.channelCount
       ? Math.floor(byteOffset / joined.header.channelCount)
       : 0;
@@ -687,6 +713,7 @@ export function validateJoinedSegments(joinedBuffer, sourceBuffers, options = {}
       startFrame,
       frameCount: src.header.frameCount,
       sourceFrames: src.header.frameCount,
+      tailFrames,
       channelCount: src.header.channelCount,
       stepTime: src.header.stepTime,
       firstMismatchFrame: null,
@@ -727,6 +754,18 @@ export function validateJoinedSegments(joinedBuffer, sourceBuffers, options = {}
       }
     }
 
+    if (segment.ok && tailFrames > 0 && src.header.channelCount === joined.header.channelCount) {
+      const tailBytes = tailFrames * src.header.channelCount;
+      const available = Math.max(0, joined.frameData.byteLength - byteOffset);
+      if (available < tailBytes) {
+        segment.ok = false;
+        segment.reason = "length";
+        segment.note = `${label}: joined file is missing ${tailFrames} closure-reset frame(s) after this show`;
+      } else {
+        byteOffset += tailBytes;
+      }
+    }
+
     if (!segment.ok) allOk = false;
     segments.push(annotateJoinSegment(segment));
   }
@@ -737,7 +776,7 @@ export function validateJoinedSegments(joinedBuffer, sourceBuffers, options = {}
     : 0;
   if (leftoverFrames > 0) allOk = false;
 
-  const expectedFrames = segments.reduce((sum, item) => sum + item.sourceFrames, 0);
+  const expectedFrames = segments.reduce((sum, item) => sum + item.sourceFrames + (item.tailFrames || 0), 0);
   if (joined.header.frameCount !== expectedFrames) {
     allOk = false;
   }
@@ -780,12 +819,44 @@ export function formatJoinVerifySummary(result, names = []) {
   return text;
 }
 
-export function joinFseqBuffers(buffers, { upgrade48to200 = false, convert50to20 = false } = {}) {
+function resetPlanForParsed(parsed, { resetClosures = false, showNames = [] } = {}) {
+  if (!resetClosures) return emptyResetPlan(parsed.length);
+  return planClosureResets(
+    parsed.map((item, index) => ({
+      usage: analyzeClosureUsage(item.frameData, item.header.channelCount, item.header.frameCount),
+      stepTime: item.header.stepTime,
+      name: showNames[index] || `Show ${index + 1}`,
+    })),
+    { enabled: true }
+  );
+}
+
+function appendResetTail(item, tail) {
+  if (!tail?.frameCount) {
+    return { ...item, tailFrames: 0, tailMs: 0 };
+  }
+  const tailFrames = buildResetTailFrames(item.header.channelCount, tail.frameCount, tail.commandIds);
+  const frameData = new Uint8Array(item.frameData.byteLength + tailFrames.byteLength);
+  frameData.set(item.frameData, 0);
+  frameData.set(tailFrames, item.frameData.byteLength);
+  return {
+    ...item,
+    frameData,
+    header: { ...item.header, frameCount: item.header.frameCount + tail.frameCount },
+    tailFrames: tail.frameCount,
+    tailMs: tail.durationMs,
+  };
+}
+
+export function joinFseqBuffers(
+  buffers,
+  { upgrade48to200 = false, convert50to20 = false, resetClosures = false, showNames = [] } = {}
+) {
   if (!buffers || buffers.length < 1) {
     throw new Error("Need at least one FSEQ file to join");
   }
 
-  const options = { upgrade48to200, convert50to20 };
+  const options = { upgrade48to200, convert50to20, resetClosures, showNames };
   const parsed = buffers.map((buffer, index) => {
     const prepared = prepareFseqForJoin(buffer, options);
     const item = readUncompressedFrames(prepared, { label: `File ${index + 1}` });
@@ -810,19 +881,22 @@ export function joinFseqBuffers(buffers, { upgrade48to200 = false, convert50to20
     }
   }
 
-  const totalFrames = parsed.reduce((sum, item) => sum + item.header.frameCount, 0);
-  const totalData = parsed.reduce((sum, item) => sum + item.frameData.byteLength, 0);
-  const out = new Uint8Array(parsed[0].headerBytes.byteLength + totalData);
-  out.set(parsed[0].headerBytes, 0);
-  let offset = parsed[0].headerBytes.byteLength;
-  for (const item of parsed) {
+  const resetPlan = resetPlanForParsed(parsed, options);
+  const withTails = parsed.map((item, index) => appendResetTail(item, resetPlan.tails[index]));
+
+  const totalFrames = withTails.reduce((sum, item) => sum + item.header.frameCount, 0);
+  const totalData = withTails.reduce((sum, item) => sum + item.frameData.byteLength, 0);
+  const out = new Uint8Array(withTails[0].headerBytes.byteLength + totalData);
+  out.set(withTails[0].headerBytes, 0);
+  let offset = withTails[0].headerBytes.byteLength;
+  for (const item of withTails) {
     out.set(item.frameData, offset);
     offset += item.frameData.byteLength;
   }
 
   const view = new DataView(out.buffer, out.byteOffset, out.byteLength);
   view.setUint32(14, totalFrames, true);
-  if (parsed[0].headerBytes.byteLength >= 32) {
+  if (withTails[0].headerBytes.byteLength >= 32) {
     setUint64LE(view, 24, Date.now());
   }
 
@@ -834,6 +908,7 @@ export function joinFseqBuffers(buffers, { upgrade48to200 = false, convert50to20
     stepTime: ref.stepTime,
     durationS: (totalFrames * ref.stepTime) / 1000,
     version: ref.version,
+    resetPlan,
   };
 }
 
@@ -846,6 +921,8 @@ export function createSampleFseq({
   compression = 0,
   fill = 1,
   frameFill = null,
+  /** 1-based channel → byte, applied after fill (e.g. `{ 41: 64 }` opens the liftgate). */
+  channelValues = null,
   dataOffset = 32,
 } = {}) {
   const expected = channelCount * frameCount;
@@ -872,6 +949,15 @@ export function createSampleFseq({
     }
   } else {
     bytes.fill(fill & 0xff, dataOffset);
+  }
+  if (channelValues && typeof channelValues === "object") {
+    for (const [channel, value] of Object.entries(channelValues)) {
+      const idx = Number(channel) - 1;
+      if (!Number.isFinite(idx) || idx < 0 || idx >= channelCount) continue;
+      for (let i = 0; i < frameCount; i += 1) {
+        bytes[dataOffset + i * channelCount + idx] = Number(value) & 0xff;
+      }
+    }
   }
   return bytes.buffer;
 }

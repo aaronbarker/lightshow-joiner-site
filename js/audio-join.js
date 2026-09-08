@@ -11,6 +11,9 @@ import { FFmpeg } from "../vendor/ffmpeg/index.js";
 import { fetchFile } from "../vendor/ffmpeg-util/index.js";
 import { extensionOf } from "./fseq.js";
 
+/** Only show pad/trim UI notes when the gap is at least this large. */
+export const AUDIO_ALIGN_NOTE_MS = 50;
+
 export const FFMPEG_CORE_VERSION = "0.12.10";
 export const FFMPEG_CACHE_NAME = `ffmpeg-core-${FFMPEG_CORE_VERSION}`;
 export const FFMPEG_CORE_BASE = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${FFMPEG_CORE_VERSION}/dist/esm`;
@@ -33,6 +36,7 @@ export function audioFilesForShows(shows) {
       ext,
       inputName: `in${index}.${ext}`,
       mp3Name: `in${index}.mp3`,
+      fitName: `fit${index}.mp3`,
       sourceName: file.name,
     };
   });
@@ -40,6 +44,121 @@ export function audioFilesForShows(shows) {
 
 export function concatListText(mp3Names) {
   return mp3Names.map((name) => `file '${String(name).replaceAll("'", "'\\''")}'`).join("\n") + "\n";
+}
+
+/** Positive = audio is short (pad). Negative = audio is long (trim). */
+export function audioAlignDeltaMs(audioMs, fseqMs) {
+  if (!Number.isFinite(audioMs) || !Number.isFinite(fseqMs) || audioMs < 0 || fseqMs < 0) {
+    return null;
+  }
+  return fseqMs - audioMs;
+}
+
+export function formatAlignSeconds(ms) {
+  const seconds = Math.abs(ms) / 1000;
+  if (!Number.isFinite(seconds)) return "";
+  if (seconds >= 10) return `${seconds.toFixed(1)}s`;
+  if (seconds >= 0.1) return `${seconds.toFixed(1)}s`;
+  return `${seconds.toFixed(2)}s`;
+}
+
+export function formatAudioAlignNote(deltaMs, thresholdMs = AUDIO_ALIGN_NOTE_MS) {
+  if (!Number.isFinite(deltaMs) || Math.abs(deltaMs) < thresholdMs) return "";
+  const label = formatAlignSeconds(deltaMs);
+  if (deltaMs > 0) return `${label} will be padded to audio to match fseq timing`;
+  return `${label} will be trimmed from audio to match fseq timing`;
+}
+
+/** PCM WAV duration from RIFF header + data chunk. */
+export function wavDurationMs(buffer) {
+  if (!buffer || buffer.byteLength < 44) return null;
+  const bytes = buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : new Uint8Array(buffer.buffer || buffer);
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const tag = (offset, length) => String.fromCharCode(...bytes.subarray(offset, offset + length));
+  if (tag(0, 4) !== "RIFF" || tag(8, 4) !== "WAVE") return null;
+  const channels = view.getUint16(22, true);
+  const sampleRate = view.getUint32(24, true);
+  const bitsPerSample = view.getUint16(34, true);
+  let offset = 12;
+  while (offset + 8 <= bytes.byteLength) {
+    const id = tag(offset, 4);
+    const size = view.getUint32(offset + 4, true);
+    if (id === "data") {
+      const bytesPerSample = bitsPerSample / 8;
+      if (!sampleRate || !channels || !bytesPerSample) return null;
+      return (size / (bytesPerSample * channels) / sampleRate) * 1000;
+    }
+    offset += 8 + size + (size % 2);
+  }
+  return null;
+}
+
+export function formatFfmpegDuration(seconds) {
+  const value = Number(seconds);
+  if (!Number.isFinite(value) || value < 0) return "0";
+  return value.toFixed(3);
+}
+
+/**
+ * Pad with silence if short, trim if long: `apad` then cut at the FSEQ duration.
+ * Same args for WAV→MP3 and already-MP3 inputs.
+ */
+export function audioFitArgs(inputName, outputName, durationSec) {
+  return ["-y", "-i", inputName, "-af", "apad", "-t", formatFfmpegDuration(durationSec), "-q:a", "9", outputName];
+}
+
+export function summarizeAudioAlign(deltas) {
+  let padded = 0;
+  let trimmed = 0;
+  for (const delta of deltas || []) {
+    if (!Number.isFinite(delta)) continue;
+    if (delta >= AUDIO_ALIGN_NOTE_MS) padded += 1;
+    else if (delta <= -AUDIO_ALIGN_NOTE_MS) trimmed += 1;
+  }
+  if (!padded && !trimmed) return "";
+  const parts = [];
+  if (padded) parts.push(`padded ${padded}`);
+  if (trimmed) parts.push(`trimmed ${trimmed}`);
+  return `Audio ${parts.join(" and ")} to match FSEQ timing.`;
+}
+
+export async function measureMediaDurationMs(file) {
+  if (!file) return null;
+  if (typeof document === "undefined") {
+    if (extensionOf(file.name) === "wav") {
+      return wavDurationMs(await file.arrayBuffer());
+    }
+    return null;
+  }
+  if (extensionOf(file.name) === "wav") {
+    try {
+      const fromHeader = wavDurationMs(await file.arrayBuffer());
+      if (Number.isFinite(fromHeader) && fromHeader > 0) return fromHeader;
+    } catch {
+      // Fall through to the media element.
+    }
+  }
+  return new Promise((resolve) => {
+    const el = document.createElement("audio");
+    const url = URL.createObjectURL(file);
+    const finish = (ms) => {
+      el.removeAttribute("src");
+      try {
+        el.load();
+      } catch {
+        // Ignore reset errors.
+      }
+      URL.revokeObjectURL(url);
+      resolve(ms);
+    };
+    el.preload = "metadata";
+    el.addEventListener("loadedmetadata", () => {
+      const duration = el.duration;
+      finish(Number.isFinite(duration) && duration > 0 ? duration * 1000 : null);
+    });
+    el.addEventListener("error", () => finish(null));
+    el.src = url;
+  });
 }
 
 function formatBytes(bytes) {
@@ -158,7 +277,7 @@ async function execOrThrow(instance, args, label, logs) {
   throw new Error(`${label} failed (ffmpeg exit ${code})${tail ? `: ${tail}` : ""}`);
 }
 
-export async function joinShowAudio(shows, onStatus) {
+export async function joinShowAudio(shows, onStatus, { targetDurationsSec = [] } = {}) {
   const inputs = audioFilesForShows(shows);
   if (inputs.length < 2) {
     throw new Error("Need at least two paired audio files to join");
@@ -175,6 +294,7 @@ export async function joinShowAudio(shows, onStatus) {
   try {
     const mp3Names = [];
     let convertedWav = 0;
+    let fitted = 0;
 
     for (const [index, item] of inputs.entries()) {
       onStatus?.(`Writing audio ${index + 1} of ${inputs.length} (${item.sourceName})…`);
@@ -182,7 +302,22 @@ export async function joinShowAudio(shows, onStatus) {
       await instance.writeFile(item.inputName, bytes);
       written.push(item.inputName);
 
-      if (item.ext === "wav") {
+      const targetSec = Number(targetDurationsSec[index]);
+      const shouldFit = Number.isFinite(targetSec) && targetSec > 0;
+      if (shouldFit) {
+        const verb = item.ext === "wav" ? "Converting and fitting" : "Fitting";
+        onStatus?.(`${verb} ${item.sourceName} to ${formatFfmpegDuration(targetSec)}s (FSEQ timing)…`);
+        await execOrThrow(
+          instance,
+          audioFitArgs(item.inputName, item.fitName, targetSec),
+          `Fit audio for ${item.sourceName}`,
+          logs
+        );
+        written.push(item.fitName);
+        if (item.ext === "wav") convertedWav += 1;
+        fitted += 1;
+        mp3Names.push(item.fitName);
+      } else if (item.ext === "wav") {
         onStatus?.(`Converting ${item.sourceName} (WAV → MP3)…`);
         await execOrThrow(
           instance,
@@ -227,6 +362,7 @@ export async function joinShowAudio(shows, onStatus) {
     return {
       bytes: output instanceof Uint8Array ? output : new Uint8Array(output),
       convertedWav,
+      fitted,
       count: inputs.length,
     };
   } finally {

@@ -581,7 +581,7 @@ label.toggle {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  max-width: 420px;
+  max-width: 460px;
   padding: 8px 10px;
   border: 1px solid var(--line);
   border-radius: 12px;

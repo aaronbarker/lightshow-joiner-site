@@ -9,7 +9,7 @@
       content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260907-joincheck" />
+    <link rel="stylesheet" href="./styles.css?v=20260907-padtrim" />
   </head>
   <body>
     <main class="app">
@@ -104,6 +104,13 @@
               <small>Experimental. Expands frames so wall-clock duration stays matched to the audio (every 2×50ms frames become 5×20ms). Does not convert 20ms → 50ms.</small>
             </span>
           </label>
+          <label class="toggle" for="reset-closures">
+            <input id="reset-closures" type="checkbox" checked />
+            <span>
+              <strong>Reset closures between shows</strong>
+              <small>After a show that moved windows, mirrors, liftgate, or charge port, add a short lights-off tail (and matching silence) so the next song starts with trunk/charge closed and windows/mirrors open. Commands are budgeted against Tesla’s per-USB-show limits; mid-playlist resets are skipped if a limit would be exceeded. The last show is always reset when budget allows.</small>
+            </span>
+          </label>
         </div>
         <p id="step-convert-warning" class="step-convert-warning" hidden>
           <strong>Experimental 50ms → 20ms:</strong>
@@ -111,6 +118,7 @@
           tight to the beat, and local timing can stutter on a ~10&nbsp;ms scale.
           That is not runaway drift if duration is preserved.
         </p>
+        <p id="closure-reset-warning" class="step-convert-warning" hidden></p>
 
         <div class="join-box">
           <p class="combined-time" id="combined-time">
@@ -135,11 +143,18 @@
             <strong>Convert 50ms → 20ms</strong> to expand 50ms frames onto a 20ms
             grid. Channel counts must match, or turn on
             <strong>Upgrade 48ch → 200ch</strong> to pad 48-channel frames to 200.
+            Each track is <strong>padded or trimmed</strong> so its audio length
+            matches that show’s FSEQ duration (after those transforms), then
+            concatenated — so later songs do not drift. Optional
+            <strong>Reset closures between shows</strong> injects a short
+            lights-off tail (and silence) after segments that moved closures,
+            budgeted against Tesla’s per-USB-show actuation limits.
             Missing-pair and incompatible rows stay unchecked and locked.
             After a join, each included row gets a <strong>Join verified</strong>
             or <strong>Join mismatch</strong> badge under the name — the output
             FSEQ is compared to that show’s frames (after the same 48→200 /
-            50→20 transforms). A successful join downloads a <strong>.zip</strong>
+            50→20 transforms; reset tails are skipped in the compare). A successful
+            join downloads a <strong>.zip</strong>
             with the combined <code>.fseq</code> and concatenated
             <code>.mp3</code> (WAV tracks are converted first, in the browser).
             If audio join fails, you still get the FSEQ and an error message.
@@ -153,10 +168,13 @@
         Default include set is 48 channels / 20&nbsp;ms with a matching audio file.
         50&nbsp;ms shows stay skipped unless <strong>Convert 50ms → 20ms</strong>
         (experimental) is on. 200-channel / 20ms shows join the default set only
-        when <strong>Upgrade 48ch → 200ch</strong> is on. Validation follows Tesla’s
+        when <strong>Upgrade 48ch → 200ch</strong> is on. Audio is padded or trimmed
+        to each show’s FSEQ length before concat. Optional closure-reset tails
+        put the car back to trunk/charge closed and windows/mirrors open, without
+        exceeding Tesla actuation limits. Validation follows Tesla’s
         <code>validator.py</code> checks.
       </footer>
     </main>
-    <script type="module" src="./js/app.js?v=20260907-joincheck"></script>
+    <script type="module" src="./js/app.js?v=20260907-padtrim"></script>
   </body>
 </html>

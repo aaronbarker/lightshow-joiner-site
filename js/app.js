@@ -7,6 +7,7 @@ import {
   formatDuration,
   formatDurationWords,
   totalIncludedDurationMs,
+  joinDurationMs,
   durationMs,
   stemOf,
   extensionOf,
@@ -22,7 +23,20 @@ import {
   formatJoinVerifySummary,
   SKIP_STEP_MS,
 } from "./fseq.js";
-import { joinShowAudio, preloadFfmpeg } from "./audio-join.js";
+import {
+  joinShowAudio,
+  preloadFfmpeg,
+  formatAudioAlignNote,
+  audioAlignDeltaMs,
+  measureMediaDurationMs,
+  summarizeAudioAlign,
+} from "./audio-join.js";
+import {
+  analyzeClosureUsage,
+  emptyClosureUsage,
+  formatClosureResetSummary,
+  planClosureResets,
+} from "./closures.js";
 import { createZipStore } from "./zip.js";
 
 const ACCEPTED = new Set(["fseq", "mp3", "wav"]);
@@ -46,6 +60,7 @@ const state = {
   customOrder: false,
   upgrade48to200: false,
   convert50to20: false,
+  resetClosures: true,
 };
 
 const els = {
@@ -62,7 +77,9 @@ const els = {
   outputName: document.getElementById("output-name"),
   upgrade48to200: document.getElementById("upgrade-48-to-200"),
   convert50to20: document.getElementById("convert-50-to-20"),
+  resetClosures: document.getElementById("reset-closures"),
   stepConvertWarning: document.getElementById("step-convert-warning"),
+  closureResetWarning: document.getElementById("closure-reset-warning"),
   combinedTimeValue: document.getElementById("combined-time-value"),
   joinStatus: document.getElementById("join-status"),
   clearShows: document.getElementById("clear-shows"),
@@ -70,7 +87,11 @@ const els = {
 };
 
 function joinOptions() {
-  return { upgrade48to200: state.upgrade48to200, convert50to20: state.convert50to20 };
+  return {
+    upgrade48to200: state.upgrade48to200,
+    convert50to20: state.convert50to20,
+    resetClosures: state.resetClosures,
+  };
 }
 
 function fileKey(file) {
@@ -186,6 +207,11 @@ async function ingestFiles(fileList, { replace = false } = {}) {
   for (const show of state.shows) {
     const wasMissing = show.audio?.kind === "missing";
     show.audio = pairAudio(show.path, allAudio);
+    if (show.audio?.file) {
+      show.audioDurationMs = await measureMediaDurationMs(show.audio.file);
+    } else {
+      show.audioDurationMs = null;
+    }
     if (wasMissing && defaultInclude(show, joinOptions())) {
       show.include = true;
     }
@@ -226,26 +252,41 @@ async function readShow(file, path, audioFiles) {
     include: false,
     audio,
     changeShift: null,
+    closureUsage: emptyClosureUsage(),
+    audioDurationMs: null,
     joinVerify: null,
   };
-  show.changeShift = await readChangeShiftStats(file, header);
+  const extras = await readShowFrameExtras(file, header);
+  show.changeShift = extras.changeShift;
+  show.closureUsage = extras.closureUsage;
+  if (audio.file) {
+    show.audioDurationMs = await measureMediaDurationMs(audio.file);
+  }
   show.include = defaultInclude(show, joinOptions());
   return show;
 }
 
-async function readChangeShiftStats(file, header) {
-  if (!file || !header || header.compression !== 0 || header.stepTime !== SKIP_STEP_MS) return null;
+async function readShowFrameExtras(file, header) {
+  const empty = { changeShift: null, closureUsage: emptyClosureUsage() };
+  if (!file || !header || header.compression !== 0) return empty;
   const channelCount = header.channelCount;
   const frameCount = header.frameCount;
-  if (!channelCount || !frameCount || channelCount < 1 || frameCount < 1) return null;
+  if (!channelCount || !frameCount || channelCount < 1 || frameCount < 1) return empty;
   const start = header.dataOffset;
   const size = channelCount * frameCount;
-  if (!Number.isFinite(start) || !Number.isFinite(size) || start < 0 || size < 1) return null;
+  if (!Number.isFinite(start) || !Number.isFinite(size) || start < 0 || size < 1) return empty;
   try {
     const frameBuf = await file.slice(start, start + size).arrayBuffer();
-    return stepConvertChangeShiftStats(new Uint8Array(frameBuf), channelCount, frameCount);
+    const frameData = new Uint8Array(frameBuf);
+    return {
+      changeShift:
+        header.stepTime === SKIP_STEP_MS
+          ? stepConvertChangeShiftStats(frameData, channelCount, frameCount)
+          : null,
+      closureUsage: analyzeClosureUsage(frameData, channelCount, frameCount),
+    };
   } catch {
-    return null;
+    return empty;
   }
 }
 
@@ -279,6 +320,25 @@ function sortShows() {
 
 function includedShows() {
   return state.shows.filter((show) => show.include && show.header && !show.orphanAudio);
+}
+
+function closureResetPlan(shows = includedShows()) {
+  const options = joinOptions();
+  if (!options.resetClosures) return { enabled: false, tails: [], warnings: [] };
+  return planClosureResets(
+    shows.map((show) => ({
+      usage: show.closureUsage || emptyClosureUsage(),
+      stepTime: effectiveStepTime(show.header.stepTime, options),
+      name: show.name,
+    })),
+    { enabled: true }
+  );
+}
+
+function audioAlignNoteFor(show, options = joinOptions()) {
+  if (!show?.header || !Number.isFinite(show.audioDurationMs)) return "";
+  const delta = audioAlignDeltaMs(show.audioDurationMs, joinDurationMs(show.header, options));
+  return formatAudioAlignNote(delta);
 }
 
 function orphanAudioShows() {
@@ -340,6 +400,7 @@ function render() {
     els.stats.innerHTML = "";
     updateCombinedTime([]);
     updateStepConvertWarning();
+    updateClosureResetWarning();
     return;
   }
 
@@ -359,6 +420,7 @@ function render() {
     .map((show, index) => {
       const header = show.header;
       const compat = rowCompatibility(show, target, options);
+      const audioNote = audioAlignNoteFor(show, options);
       const selectable = isSelectableForJoin(show, target, options);
       const pairNote = missingPairNote(show);
       const errorRow = Boolean(pairNote || show.error || show.orphanAudio);
@@ -426,6 +488,11 @@ function render() {
                 ? `<span class="compat-shift" title="Visual light changes (bytes that differ from the previous frame). Odd-index changes start 10ms late on the 20ms grid.">${escapeHtml(compat.shiftNote)}</span>`
                 : ""
             }
+            ${
+              audioNote
+                ? `<span class="compat-shift compat-audio" title="This track’s length will be padded or trimmed so it matches this show’s FSEQ duration after 50→20 / 48→200.">${escapeHtml(audioNote)}</span>`
+                : ""
+            }
           </td>
         </tr>
       `;
@@ -440,6 +507,7 @@ function render() {
   els.joinBtn.disabled = included.length < 2;
   updateCombinedTime(included);
   updateStepConvertWarning();
+  updateClosureResetWarning(included);
   bindRowEvents();
   if (preview.showId && !rows.some((show) => show.id === preview.showId)) {
     stopPreview();
@@ -452,6 +520,23 @@ function updateStepConvertWarning() {
   els.stepConvertWarning.hidden = !state.convert50to20;
 }
 
+function updateClosureResetWarning(included = includedShows()) {
+  if (!els.closureResetWarning) return;
+  if (!state.resetClosures || included.length < 2) {
+    els.closureResetWarning.hidden = true;
+    els.closureResetWarning.textContent = "";
+    return;
+  }
+  const plan = closureResetPlan(included);
+  if (!plan.warnings?.length) {
+    els.closureResetWarning.hidden = true;
+    els.closureResetWarning.textContent = "";
+    return;
+  }
+  els.closureResetWarning.hidden = false;
+  els.closureResetWarning.textContent = plan.warnings.join(" ");
+}
+
 function updateCombinedTime(included = includedShows()) {
   if (!els.combinedTimeValue) return;
   if (!included.length) {
@@ -459,7 +544,9 @@ function updateCombinedTime(included = includedShows()) {
     els.combinedTimeValue.classList.add("is-empty");
     return;
   }
-  els.combinedTimeValue.textContent = formatDurationWords(totalIncludedDurationMs(included));
+  const options = joinOptions();
+  const tails = options.resetClosures ? closureResetPlan(included).tails : [];
+  els.combinedTimeValue.textContent = formatDurationWords(totalIncludedDurationMs(included, options, tails));
   els.combinedTimeValue.classList.remove("is-empty");
 }
 
@@ -670,15 +757,17 @@ function downloadBlob(data, filename, type) {
   URL.revokeObjectURL(url);
 }
 
-function fseqSummary(selected, joined, validation, verify) {
+function fseqSummary(selected, joined, validation, verify, audioNote = "") {
   const validText = validation.ok
     ? `Tesla validator checks passed (${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s).`
     : `Joined file failed validator: ${validation.errors.join("; ")}`;
   const upgradeNote = state.upgrade48to200 ? " 48→200 upgrade applied." : "";
   const convertNote = state.convert50to20 ? " 50→20 step conversion applied." : "";
+  const resetNote = state.resetClosures && joined.resetPlan ? ` ${formatClosureResetSummary(joined.resetPlan)}` : "";
   const names = selected.map((show) => show.name);
   const verifyText = verify ? ` ${formatJoinVerifySummary(verify, names)}` : "";
-  return `${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote}${convertNote}${verifyText}`;
+  const alignNote = audioNote ? ` ${audioNote}` : "";
+  return `${selected.length} shows, ${joined.channelCount}ch, ${joined.stepTime}ms, ${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s. ${validText}${upgradeNote}${convertNote}${resetNote}${alignNote}${verifyText}`;
 }
 
 async function joinAndDownload() {
@@ -718,21 +807,39 @@ async function joinAndDownload() {
     for (const show of selected) {
       buffers.push(await show.file.arrayBuffer());
     }
-    const joined = joinFseqBuffers(buffers, joinOptions());
+    const joinOpts = { ...joinOptions(), showNames: selected.map((show) => show.name) };
+    const joined = joinFseqBuffers(buffers, joinOpts);
     const validation = validateFseq(joined.buffer);
-    const verify = validateJoinedSegments(joined.buffer, buffers, joinOptions());
+    const verify = validateJoinedSegments(joined.buffer, buffers, joinOpts);
     for (let i = 0; i < selected.length; i += 1) {
       selected[i].joinVerify = verify.segments[i] || null;
     }
     render();
     els.joinBtn.disabled = true;
     els.joinBtn.textContent = "Joining…";
-    const summary = fseqSummary(selected, joined, validation, verify);
+
+    const alignDeltas = selected.map((show, index) => {
+      const fseqMs = joinDurationMs(show.header, joinOpts);
+      const tailMs = joined.resetPlan?.tails[index]?.durationMs || 0;
+      return audioAlignDeltaMs(show.audioDurationMs, fseqMs + tailMs);
+    });
+    const audioNote = summarizeAudioAlign(alignDeltas);
+    const summary = fseqSummary(selected, joined, validation, verify, audioNote);
+
+    const targetDurationsSec = selected.map((show, index) => {
+      const fseqMs = joinDurationMs(show.header, joinOpts);
+      const tailMs = joined.resetPlan?.tails[index]?.durationMs || 0;
+      return (fseqMs + tailMs) / 1000;
+    });
 
     let audioResult = null;
     let audioError = null;
     try {
-      audioResult = await joinShowAudio(selected, (message) => setJoinStatus(message, "info", { scroll: true }));
+      audioResult = await joinShowAudio(
+        selected,
+        (message) => setJoinStatus(message, "info", { scroll: true }),
+        { targetDurationsSec }
+      );
     } catch (err) {
       audioError = err;
     }
@@ -744,7 +851,7 @@ async function joinAndDownload() {
       ]);
       downloadBlob(zipBytes, `${name}.zip`, "application/zip");
       const wavNote = audioResult.convertedWav
-        ? ` Converted ${audioResult.convertedWav} WAV file(s) to MP3 (may drift slightly vs lights).`
+        ? ` Converted ${audioResult.convertedWav} WAV file(s) to MP3.`
         : "";
       setJoinStatus(
         `Downloaded <strong>${escapeHtml(name)}.zip</strong> containing <strong>${escapeHtml(name)}.fseq</strong> and <strong>${escapeHtml(name)}.mp3</strong> — ${summary}${wavNote}`,
@@ -802,6 +909,11 @@ function loadSamples() {
     fileFrom("still-glow.wav", wav, "audio/wav"),
     fileFrom("cybertruck-wide.fseq", createSampleFseq({ frameCount: 60, channelCount: 200, fill: 55 })),
     fileFrom("cybertruck-wide.wav", wav, "audio/wav"),
+    fileFrom(
+      "trunk-left-open.fseq",
+      createSampleFseq({ frameCount: 50, fill: 0, channelValues: { 41: 64 } })
+    ),
+    fileFrom("trunk-left-open.wav", wav, "audio/wav"),
     fileFrom("lonely-track.wav", wav, "audio/wav"),
   ];
   ingestFiles(files, { replace: true });
@@ -868,6 +980,10 @@ els.upgrade48to200?.addEventListener("change", () => {
 });
 els.convert50to20?.addEventListener("change", () => {
   state.convert50to20 = Boolean(els.convert50to20.checked);
+  applyJoinOptionChange();
+});
+els.resetClosures?.addEventListener("change", () => {
+  state.resetClosures = Boolean(els.resetClosures.checked);
   applyJoinOptionChange();
 });
 els.joinBtn.addEventListener("click", joinAndDownload);

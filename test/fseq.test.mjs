@@ -28,6 +28,8 @@ import {
   readUncompressedFrames,
   validateJoinedSegments,
   formatJoinVerifySummary,
+  joinDurationMs,
+  joinFrameCount,
 } from "../js/fseq.js";
 
 test("parses uncompressed V2 PSEQ header fields", () => {
@@ -370,6 +372,20 @@ test("formatDuration and stem helpers", () => {
   assert.equal(formatDuration(90_000), "1:30");
   assert.equal(formatDuration(3_661_000), "1:01:01");
   assert.equal(stemOf("Shows/Halloween Intro.FSEQ"), "halloween intro");
+});
+
+test("joinDurationMs follows 50→20 wall-clock and ignores 48→200", () => {
+  const slow = parseFseqHeader(createSampleFseq({ frameCount: 4, stepTime: 50 }));
+  assert.equal(joinDurationMs(slow), 200);
+  assert.equal(joinDurationMs(slow, { convert50to20: true }), 200);
+  assert.equal(joinFrameCount(slow, { convert50to20: true }), 10);
+
+  const odd = parseFseqHeader(createSampleFseq({ frameCount: 1, stepTime: 50 }));
+  assert.equal(joinFrameCount(odd, { convert50to20: true }), 3);
+  assert.equal(joinDurationMs(odd, { convert50to20: true }), 60);
+
+  const native = parseFseqHeader(createSampleFseq({ frameCount: 100, stepTime: 20 }));
+  assert.equal(joinDurationMs(native, { convert50to20: true, upgrade48to200: true }), 2000);
 });
 
 test("formatDurationWords and included duration sum", () => {
