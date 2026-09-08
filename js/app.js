@@ -335,9 +335,10 @@ function closureResetPlan(shows = includedShows()) {
   );
 }
 
-function audioAlignNoteFor(show, options = joinOptions()) {
+function audioAlignNoteFor(show, options = joinOptions(), extraMs = 0) {
   if (!show?.header || !Number.isFinite(show.audioDurationMs)) return "";
-  const delta = audioAlignDeltaMs(show.audioDurationMs, joinDurationMs(show.header, options));
+  const targetMs = joinDurationMs(show.header, options) + (Number(extraMs) || 0);
+  const delta = audioAlignDeltaMs(show.audioDurationMs, targetMs);
   return formatAudioAlignNote(delta);
 }
 
@@ -407,6 +408,13 @@ function render() {
   const options = joinOptions();
   const target = resolveJoinTarget(state.shows, options);
   const included = includedShows();
+  const resetPlan = options.resetClosures ? closureResetPlan(included) : null;
+  const tailMsById = new Map();
+  if (resetPlan) {
+    included.forEach((show, index) => {
+      tailMsById.set(show.id, resetPlan.tails[index]?.durationMs || 0);
+    });
+  }
   const pairErrors = rows.filter((show) => isMissingPair(show)).length;
   const skipped = rows.length - included.length;
   els.stats.innerHTML = `
@@ -420,7 +428,7 @@ function render() {
     .map((show, index) => {
       const header = show.header;
       const compat = rowCompatibility(show, target, options);
-      const audioNote = audioAlignNoteFor(show, options);
+      const audioNote = audioAlignNoteFor(show, options, tailMsById.get(show.id) || 0);
       const selectable = isSelectableForJoin(show, target, options);
       const pairNote = missingPairNote(show);
       const errorRow = Boolean(pairNote || show.error || show.orphanAudio);
