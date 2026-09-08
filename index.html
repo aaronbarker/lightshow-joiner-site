@@ -9,7 +9,7 @@
       content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260907-padtrim2" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-reset1" />
   </head>
   <body>
     <main class="app">
@@ -108,7 +108,7 @@
             <input id="reset-closures" type="checkbox" checked />
             <span>
               <strong>Reset closures between shows</strong>
-              <small>After a show that moved windows, mirrors, liftgate, or charge port, add a short lights-off tail (and matching silence) so the next song starts with trunk/charge closed and windows/mirrors open. Commands are budgeted against Tesla’s per-USB-show limits; mid-playlist resets are skipped if a limit would be exceeded. The last show is always reset when budget allows.</small>
+              <small>Count Open/Close/Dance in the included shows, then inject one defaults reset (trunk/charge closed, windows/mirrors open) after the last show that still fits Tesla’s per-USB-show limits. If even that one reset would be ignored, it is skipped and a warning is shown.</small>
             </span>
           </label>
         </div>
@@ -146,9 +146,9 @@
             Each track is <strong>padded or trimmed</strong> so its audio length
             matches that show’s FSEQ duration (after those transforms), then
             concatenated — so later songs do not drift. Optional
-            <strong>Reset closures between shows</strong> injects a short
-            lights-off tail (and silence) after segments that moved closures,
-            budgeted against Tesla’s per-USB-show actuation limits.
+            <strong>Reset closures between shows</strong> injects one
+            lights-off tail (and silence) after the last included show that
+            still has Tesla command budget — not after every track.
             Missing-pair and incompatible rows stay unchecked and locked.
             After a join, each included row gets a <strong>Join verified</strong>
             or <strong>Join mismatch</strong> badge under the name — the output
@@ -169,12 +169,12 @@
         50&nbsp;ms shows stay skipped unless <strong>Convert 50ms → 20ms</strong>
         (experimental) is on. 200-channel / 20ms shows join the default set only
         when <strong>Upgrade 48ch → 200ch</strong> is on. Audio is padded or trimmed
-        to each show’s FSEQ length before concat. Optional closure-reset tails
-        put the car back to trunk/charge closed and windows/mirrors open, without
-        exceeding Tesla actuation limits. Validation follows Tesla’s
+        to each show’s FSEQ length before concat. Optional closure reset injects
+        one defaults pose (trunk/charge closed, windows/mirrors open) at the
+        latest point that still fits Tesla’s per-USB-show limits. Validation follows Tesla’s
         <code>validator.py</code> checks.
       </footer>
     </main>
-    <script type="module" src="./js/app.js?v=20260907-padtrim2"></script>
+    <script type="module" src="./js/app.js?v=20260908-reset1"></script>
   </body>
 </html>

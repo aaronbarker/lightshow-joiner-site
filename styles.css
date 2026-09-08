@@ -623,6 +623,25 @@ label.toggle small {
   display: none;
 }
 
+#closure-reset-warning {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+#closure-reset-warning[hidden] {
+  display: none;
+}
+
+#closure-reset-warning span {
+  display: block;
+}
+
+#closure-reset-warning:not(.is-over) {
+  background: #1a2030;
+  color: #c9d4ea;
+}
+
 label.field {
   display: flex;
   flex-direction: column;

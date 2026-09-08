@@ -122,20 +122,33 @@ export function buildResetTailFrames(channelCount, frameCount, commandIds) {
   return out;
 }
 
-function usedAnywhere(usages, id) {
-  return (usages || []).some((usage) => usage?.[id]?.used);
-}
-
-function lastCommand(usage, id) {
-  return usage?.[id]?.last ?? null;
-}
-
 function sourceCounts(usages) {
   const totals = {};
   for (const id of RESET_CLOSURE_IDS) {
     totals[id] = (usages || []).reduce((sum, usage) => sum + (usage?.[id]?.count || 0), 0);
   }
   return totals;
+}
+
+function prefixCounts(usages) {
+  const prefixes = [];
+  const running = Object.fromEntries(RESET_CLOSURE_IDS.map((id) => [id, 0]));
+  for (const usage of usages || []) {
+    for (const id of RESET_CLOSURE_IDS) {
+      running[id] += usage?.[id]?.count || 0;
+    }
+    prefixes.push({ ...running });
+  }
+  return prefixes;
+}
+
+function lastCommandThrough(usages, id, index) {
+  let last = null;
+  for (let i = 0; i <= index; i += 1) {
+    const value = usages[i]?.[id]?.last;
+    if (value != null) last = value;
+  }
+  return last;
 }
 
 function makeTail(commandIds, stepTime) {
@@ -150,6 +163,30 @@ function makeTail(commandIds, stepTime) {
   };
 }
 
+export function closureBudgets(sourceCountsMap = {}, addedCountsMap = {}) {
+  return RESET_CLOSURE_IDS.map((id) => {
+    const spec = RESET_CLOSURES[id];
+    const source = sourceCountsMap[id] || 0;
+    const added = addedCountsMap[id] || 0;
+    const used = source + added;
+    return {
+      id,
+      label: spec.label,
+      source,
+      added,
+      used,
+      limit: spec.limit,
+      over: used > spec.limit,
+    };
+  }).filter((item) => item.source > 0 || item.added > 0);
+}
+
+export function formatClosureBudgetWarning(budget) {
+  if (!budget) return "";
+  const line = `${budget.label}: ${budget.used}/${budget.limit} commands`;
+  return budget.over ? `${line} — vehicle will ignore extras` : line;
+}
+
 export function emptyResetPlan(count = 0) {
   return {
     enabled: false,
@@ -157,18 +194,31 @@ export function emptyResetPlan(count = 0) {
     warnings: [],
     sourceCounts: sourceCounts([]),
     addedCounts: Object.fromEntries(RESET_CLOSURE_IDS.map((id) => [id, 0])),
-    skippedMid: [],
+    budgets: [],
+    injectIndex: -1,
+    injectName: "",
+    skippedInject: false,
   };
 }
 
+function neededAt(usages, prefixes, index) {
+  const prefix = prefixes[index] || {};
+  return RESET_CLOSURE_IDS.filter((id) => {
+    const spec = RESET_CLOSURES[id];
+    return (prefix[id] || 0) > 0 && lastCommandThrough(usages, id, index) !== spec.reset;
+  });
+}
+
+function fittingAt(needed, prefixes, index) {
+  const prefix = prefixes[index] || {};
+  return needed.filter((id) => (prefix[id] || 0) + 1 <= RESET_CLOSURES[id].limit);
+}
+
 /**
- * Budget Open/Close resets across the whole joined USB show.
- *
- * Mid-segment tails: only closures that were actuated in that segment.
- * Final tail: any closure actuated anywhere in the join (covers the
- * "trunk left open" case even when mid resets were skipped).
- * Final reset is reserved first so a 9-show liftgate playlist still
- * tries to close at the end instead of spending the last slot mid-list.
+ * One defaults-pose reset (trunk/power Close, windows/mirrors Open), placed
+ * after the latest show where those extra Open/Close commands still fit
+ * inside Tesla’s per-USB-show limits. Source commands already in the FSEQ
+ * always count; we never inject after every segment.
  */
 export function planClosureResets(segments, { enabled = true } = {}) {
   const items = segments || [];
@@ -178,63 +228,36 @@ export function planClosureResets(segments, { enabled = true } = {}) {
 
   const usages = items.map((item) => item.usage || emptyClosureUsage());
   const totals = sourceCounts(usages);
-  const remaining = {};
-  const warnings = [];
+  const prefixes = prefixCounts(usages);
   const addedCounts = Object.fromEntries(RESET_CLOSURE_IDS.map((id) => [id, 0]));
+  const tails = items.map((item) => makeTail([], Number(item.stepTime) || 20));
 
-  for (const spec of Object.values(RESET_CLOSURES)) {
-    const used = totals[spec.id] || 0;
-    remaining[spec.id] = spec.limit - used;
-    if (used > spec.limit) {
-      warnings.push(
-        `${spec.label}: included shows already use ${used} Open/Close/Dance command(s) (Tesla limit ${spec.limit} per USB show).`
-      );
+  let inject = null;
+  let partial = null;
+  for (let i = items.length - 1; i >= 0; i -= 1) {
+    const needed = neededAt(usages, prefixes, i);
+    if (!needed.length) continue;
+    const fitting = fittingAt(needed, prefixes, i);
+    if (fitting.length === needed.length) {
+      inject = { index: i, commandIds: fitting };
+      break;
+    }
+    if (fitting.length && !partial) {
+      partial = { index: i, commandIds: fitting };
     }
   }
+  if (!inject) inject = partial;
 
-  const lastIndex = items.length - 1;
-  const lastUsage = usages[lastIndex];
-  const finalIds = [];
-  for (const spec of Object.values(RESET_CLOSURES)) {
-    if (!usedAnywhere(usages, spec.id)) continue;
-    if (lastCommand(lastUsage, spec.id) === spec.reset) continue;
-    if (remaining[spec.id] >= 1) {
-      finalIds.push(spec.id);
-      remaining[spec.id] -= 1;
-      addedCounts[spec.id] += 1;
-    } else if (usedAnywhere(usages, spec.id)) {
-      warnings.push(
-        `${spec.label}: skipped end-of-join reset (Tesla limit ${spec.limit} already used).`
-      );
-    }
+  if (inject) {
+    for (const id of inject.commandIds) addedCounts[id] += 1;
+    tails[inject.index] = makeTail(inject.commandIds, Number(items[inject.index].stepTime) || 20);
   }
 
-  const tails = [];
-  const skippedMid = [];
-  for (let i = 0; i < items.length; i += 1) {
-    const stepTime = Number(items[i].stepTime) || 20;
-    if (i === lastIndex) {
-      tails.push(makeTail(finalIds, stepTime));
-      continue;
-    }
-
-    const commandIds = [];
-    const usage = usages[i];
-    for (const spec of Object.values(RESET_CLOSURES)) {
-      if (!usage[spec.id]?.used) continue;
-      if (lastCommand(usage, spec.id) === spec.reset) continue;
-      if (remaining[spec.id] >= 1) {
-        commandIds.push(spec.id);
-        remaining[spec.id] -= 1;
-        addedCounts[spec.id] += 1;
-      } else {
-        skippedMid.push({ index: i, id: spec.id, name: items[i].name || `Show ${i + 1}` });
-        warnings.push(
-          `${spec.label}: skipped reset after ${items[i].name || `show ${i + 1}`} to stay under Tesla’s ${spec.limit}-command limit.`
-        );
-      }
-    }
-    tails.push(makeTail(commandIds, stepTime));
+  const budgets = closureBudgets(totals, addedCounts);
+  const warnings = budgets.filter((item) => item.over).map((item) => formatClosureBudgetWarning(item));
+  const skippedInject = Boolean(!inject && neededAt(usages, prefixes, items.length - 1).length);
+  if (skippedInject) {
+    warnings.push("No closure reset injected — no remaining command budget.");
   }
 
   return {
@@ -243,28 +266,28 @@ export function planClosureResets(segments, { enabled = true } = {}) {
     warnings: [...new Set(warnings)],
     sourceCounts: totals,
     addedCounts,
-    skippedMid,
+    budgets,
+    injectIndex: inject ? inject.index : -1,
+    injectName: inject ? items[inject.index].name || `Show ${inject.index + 1}` : "",
+    skippedInject,
   };
 }
 
 export function formatClosureResetSummary(plan) {
   if (!plan?.enabled) return "";
-  const tailCount = (plan.tails || []).filter((tail) => tail.frameCount > 0).length;
-  const extraMs = (plan.tails || []).reduce((sum, tail) => sum + (tail.durationMs || 0), 0);
-  const extraSec = extraMs / 1000;
+  const tail = (plan.tails || []).find((item) => item.frameCount > 0);
+  const extraSec = (tail?.durationMs || 0) / 1000;
   const parts = [];
-  if (tailCount) {
+  if (tail && plan.injectIndex >= 0) {
     const time = extraSec >= 10 ? extraSec.toFixed(0) : extraSec.toFixed(extraSec >= 1 ? 1 : 2);
-    parts.push(
-      `Reset closures after ${tailCount} show${tailCount === 1 ? "" : "s"} (+${time}s lights-off / silence).`
-    );
+    const where = plan.injectName ? ` after ${plan.injectName}` : "";
+    parts.push(`Reset closures${where} (+${time}s lights-off / silence).`);
+  } else if (plan.skippedInject) {
+    parts.push("No closure reset injected — no remaining command budget.");
   } else {
-    parts.push("Closure reset on; no extra tails needed.");
+    parts.push("Closure reset on; no extra tail needed.");
   }
-  if (plan.skippedMid?.length) {
-    parts.push("Some mid-playlist resets were skipped to stay under Tesla actuation limits.");
-  }
-  const over = (plan.warnings || []).filter((text) => text.includes("already use"));
-  if (over.length) parts.push(over[0]);
+  const over = (plan.warnings || []).filter((text) => text.includes("will ignore extras"));
+  if (over.length) parts.push(over.join(" "));
   return parts.join(" ");
 }

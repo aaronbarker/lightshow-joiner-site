@@ -4,7 +4,9 @@ import {
   analyzeClosureUsage,
   buildResetTailFrames,
   CLOSURE_CMD,
+  closureBudgets,
   emptyClosureUsage,
+  formatClosureBudgetWarning,
   formatClosureResetSummary,
   planClosureResets,
   RESET_CLOSURES,
@@ -37,7 +39,6 @@ test("analyzeClosureUsage counts contiguous Open/Close/Dance runs", () => {
   const frames = 8;
   const data = new Uint8Array(frames * channels);
   const lift = RESET_CLOSURES.liftgate.channel - 1;
-  // Idle, Open run, Idle, Close run, Open single → 3 commands
   const seq = [0, 64, 64, 0, 192, 192, 255, 64];
   for (let f = 0; f < frames; f += 1) data[f * channels + lift] = seq[f];
 
@@ -56,7 +57,7 @@ test("Idle and Stop do not count as actuations", () => {
   assert.equal(usage.liftgate.last, null);
 });
 
-test("planClosureResets only mid-resets used closures and always tries the last show", () => {
+test("planClosureResets injects one defaults reset after the last show when budget allows", () => {
   const openTrunk = usageFor(41, CLOSURE_CMD.OPEN);
   const idle = emptyClosureUsage();
   const plan = planClosureResets([
@@ -65,35 +66,37 @@ test("planClosureResets only mid-resets used closures and always tries the last 
     { usage: idle, stepTime: 20, name: "c.fseq" },
   ]);
 
-  assert.deepEqual(plan.tails[0].commandIds, ["liftgate"]);
-  assert.equal(plan.tails[0].durationSec, 4);
-  assert.equal(plan.tails[0].frameCount, 200);
+  assert.equal(plan.injectIndex, 2);
+  assert.equal(plan.injectName, "c.fseq");
+  assert.deepEqual(plan.tails[0].commandIds, []);
   assert.deepEqual(plan.tails[1].commandIds, []);
   assert.deepEqual(plan.tails[2].commandIds, ["liftgate"]);
-  assert.equal(plan.addedCounts.liftgate, 2);
+  assert.equal(plan.tails[2].durationSec, 4);
+  assert.equal(plan.tails[2].frameCount, 200);
+  assert.equal(plan.addedCounts.liftgate, 1);
+  assert.equal(plan.sourceCounts.liftgate, 1);
+  assert.equal(plan.budgets.find((item) => item.id === "liftgate").used, 2);
+  assert.equal(plan.warnings.length, 0);
 });
 
-test("liftgate budget reserves the final reset and skips mid-playlist extras", () => {
+test("injects after the last show that still fits when later shows exhaust the limit", () => {
   const open = usageFor(41, CLOSURE_CMD.OPEN);
-  const idle = emptyClosureUsage();
-  // 5 opens already used → 1 slot left → reserve for the end, skip mid.
-  const segments = [
-    { usage: open, stepTime: 20, name: "1.fseq" },
-    { usage: open, stepTime: 20, name: "2.fseq" },
-    { usage: open, stepTime: 20, name: "3.fseq" },
-    { usage: open, stepTime: 20, name: "4.fseq" },
-    { usage: open, stepTime: 20, name: "5.fseq" },
-    { usage: idle, stepTime: 20, name: "6.fseq" },
-  ];
+  const segments = Array.from({ length: 6 }, (_, i) => ({
+    usage: open,
+    stepTime: 20,
+    name: `${i + 1}.fseq`,
+  }));
   const plan = planClosureResets(segments);
-  assert.equal(plan.tails[0].commandIds.includes("liftgate"), false);
-  assert.equal(plan.tails[4].commandIds.includes("liftgate"), false);
-  assert.deepEqual(plan.tails[5].commandIds, ["liftgate"]);
-  assert.ok(plan.skippedMid.length >= 1);
-  assert.match(plan.warnings.join(" "), /skipped reset after/);
+  // prefix after show 5 (index 4) is 5, so Close still fits as command 6.
+  assert.equal(plan.injectIndex, 4);
+  assert.deepEqual(plan.tails[4].commandIds, ["liftgate"]);
+  assert.equal(plan.tails[5].frameCount, 0);
+  assert.equal(plan.addedCounts.liftgate, 1);
+  assert.equal(plan.sourceCounts.liftgate, 6);
+  assert.match(plan.warnings.join(" "), /Liftgate: 7\/6 commands — vehicle will ignore extras/);
 });
 
-test("nine liftgate-using shows stay at the Tesla limit of 6", () => {
+test("nine liftgate-using shows inject once at the last fitting open and warn", () => {
   const open = usageFor(41, CLOSURE_CMD.OPEN);
   const segments = Array.from({ length: 9 }, (_, i) => ({
     usage: open,
@@ -101,15 +104,34 @@ test("nine liftgate-using shows stay at the Tesla limit of 6", () => {
     name: `${i + 1}.fseq`,
   }));
   const plan = planClosureResets(segments);
-  const added = plan.addedCounts.liftgate;
-  const source = plan.sourceCounts.liftgate;
-  assert.equal(source, 9);
-  assert.equal(added, 0);
-  assert.ok(plan.warnings.some((text) => /already use 9/.test(text)));
-  assert.equal(plan.tails[8].frameCount, 0);
+  assert.equal(plan.sourceCounts.liftgate, 9);
+  assert.equal(plan.addedCounts.liftgate, 1);
+  assert.equal(plan.injectIndex, 4);
+  assert.equal(plan.tails.filter((tail) => tail.frameCount > 0).length, 1);
+  assert.match(formatClosureBudgetWarning(plan.budgets.find((item) => item.id === "liftgate")), /9\/6|10\/6/);
+  assert.match(plan.warnings.join(" "), /Liftgate: 10\/6 commands — vehicle will ignore extras/);
+  assert.match(formatClosureResetSummary(plan), /Reset closures after 5\.fseq/);
 });
 
-test("charge port limit of 3 is respected independently", () => {
+test("skips inject when even one reset cannot fit anywhere", () => {
+  // Six separate Open runs, ending Open: prefix is 6, so a Close would be command 7.
+  const data = new Uint8Array(12 * 48);
+  const lift = 40;
+  for (let f = 0; f < 12; f += 1) {
+    data[f * 48 + lift] = f % 2 === 0 ? CLOSURE_CMD.OPEN : CLOSURE_CMD.IDLE;
+  }
+  const usage = analyzeClosureUsage(data, 48, 12);
+  assert.equal(usage.liftgate.count, 6);
+  assert.equal(usage.liftgate.last, CLOSURE_CMD.OPEN);
+  const plan = planClosureResets([{ usage, stepTime: 20, name: "busy.fseq" }]);
+  assert.equal(plan.addedCounts.liftgate, 0);
+  assert.equal(plan.injectIndex, -1);
+  assert.equal(plan.skippedInject, true);
+  assert.equal(plan.tails[0].frameCount, 0);
+  assert.match(plan.warnings.join(" "), /no remaining command budget/i);
+});
+
+test("charge port budget is tracked independently", () => {
   const openPort = usageFor(46, CLOSURE_CMD.OPEN);
   const segments = Array.from({ length: 3 }, (_, i) => ({
     usage: openPort,
@@ -118,8 +140,31 @@ test("charge port limit of 3 is respected independently", () => {
   }));
   const plan = planClosureResets(segments);
   assert.equal(plan.sourceCounts.chargePort, 3);
-  assert.equal(plan.addedCounts.chargePort, 0);
-  assert.match(formatClosureResetSummary(plan), /no extra tails|skipped|already use/i);
+  // Latest full fit: after show 2 (index 1) prefix=2, Close is command 3.
+  assert.equal(plan.injectIndex, 1);
+  assert.equal(plan.addedCounts.chargePort, 1);
+  assert.match(plan.warnings.join(" "), /Charge port: 4\/3 commands — vehicle will ignore extras/);
+});
+
+test("does not inject when the last command is already the default pose", () => {
+  const closed = usageFor(41, CLOSURE_CMD.CLOSE);
+  const plan = planClosureResets([
+    { usage: closed, stepTime: 20, name: "done.fseq" },
+    { usage: emptyClosureUsage(), stepTime: 20, name: "idle.fseq" },
+  ]);
+  assert.equal(plan.injectIndex, -1);
+  assert.equal(plan.addedCounts.liftgate, 0);
+  assert.match(formatClosureResetSummary(plan), /no extra tail needed/);
+});
+
+test("closureBudgets only lists types that were used", () => {
+  const budgets = closureBudgets({ liftgate: 2, chargePort: 0 }, { liftgate: 1 });
+  assert.equal(budgets.length, 1);
+  assert.equal(budgets[0].label, "Liftgate");
+  assert.equal(budgets[0].used, 3);
+  assert.equal(budgets[0].limit, 6);
+  assert.equal(budgets[0].over, false);
+  assert.equal(formatClosureBudgetWarning(budgets[0]), "Liftgate: 3/6 commands");
 });
 
 test("buildResetTailFrames writes default pose and leaves lights idle", () => {
@@ -143,7 +188,7 @@ test("tail duration uses the slowest commanded movement", () => {
   assert.equal(tailFrameCountForDuration(4, 50), 80);
 });
 
-test("join injects a liftgate close tail and segment verify still passes", () => {
+test("join injects a single liftgate close tail after the last fitting show", () => {
   const openTrunk = createSampleFseq({
     frameCount: 10,
     fill: 7,
@@ -153,22 +198,24 @@ test("join injects a liftgate close tail and segment verify still passes", () =>
   const options = { resetClosures: true, showNames: ["open.fseq", "dance.fseq"] };
   const joined = joinFseqBuffers([openTrunk, dance], options);
 
-  assert.equal(joined.resetPlan.tails[0].frameCount, 200);
+  assert.equal(joined.resetPlan.tails[0].frameCount, 0);
   assert.equal(joined.resetPlan.tails[1].frameCount, 200);
-  assert.equal(joined.totalFrames, 10 + 200 + 8 + 200);
-  assert.equal(joined.durationS, (418 * 20) / 1000);
+  assert.equal(joined.resetPlan.injectIndex, 1);
+  assert.equal(joined.totalFrames, 10 + 8 + 200);
+  assert.equal(joined.durationS, (218 * 20) / 1000);
 
   const header = parseFseqHeader(joined.buffer);
   const data = new Uint8Array(joined.buffer, header.dataOffset);
-  const firstTail = 10 * 48;
-  assert.equal(data[firstTail + 40], CLOSURE_CMD.CLOSE);
-  assert.equal(data[firstTail], 0);
+  const tailAt = 18 * 48;
+  assert.equal(data[tailAt + 40], CLOSURE_CMD.CLOSE);
+  assert.equal(data[tailAt], 0);
 
   const verify = validateJoinedSegments(joined.buffer, [openTrunk, dance], options);
   assert.equal(verify.ok, true);
-  assert.equal(verify.segments[0].tailFrames, 200);
+  assert.equal(verify.segments[0].tailFrames, 0);
+  assert.equal(verify.segments[1].tailFrames, 200);
   assert.equal(verify.leftoverFrames, 0);
-  assert.equal(verify.expectedFrames, 418);
+  assert.equal(verify.expectedFrames, 218);
 });
 
 test("join without resetClosures does not add tails", () => {

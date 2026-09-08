@@ -955,7 +955,8 @@ export function createSampleFseq({
       const idx = Number(channel) - 1;
       if (!Number.isFinite(idx) || idx < 0 || idx >= channelCount) continue;
       for (let i = 0; i < frameCount; i += 1) {
-        bytes[dataOffset + i * channelCount + idx] = Number(value) & 0xff;
+        const byte = typeof value === "function" ? value(i) : value;
+        bytes[dataOffset + i * channelCount + idx] = Number(byte) & 0xff;
       }
     }
   }

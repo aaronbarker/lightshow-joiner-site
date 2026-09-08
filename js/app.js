@@ -34,6 +34,7 @@ import {
 import {
   analyzeClosureUsage,
   emptyClosureUsage,
+  formatClosureBudgetWarning,
   formatClosureResetSummary,
   planClosureResets,
 } from "./closures.js";
@@ -532,17 +533,31 @@ function updateClosureResetWarning(included = includedShows()) {
   if (!els.closureResetWarning) return;
   if (!state.resetClosures || included.length < 2) {
     els.closureResetWarning.hidden = true;
-    els.closureResetWarning.textContent = "";
+    els.closureResetWarning.innerHTML = "";
+    els.closureResetWarning.classList.remove("is-over");
     return;
   }
   const plan = closureResetPlan(included);
-  if (!plan.warnings?.length) {
+  const budgets = plan.budgets || [];
+  if (!budgets.length && !plan.skippedInject) {
     els.closureResetWarning.hidden = true;
-    els.closureResetWarning.textContent = "";
+    els.closureResetWarning.innerHTML = "";
+    els.closureResetWarning.classList.remove("is-over");
     return;
   }
+  const over = budgets.some((item) => item.over);
+  const lines = [];
+  if (plan.injectName) {
+    lines.push(`Defaults reset after ${escapeHtml(plan.injectName)}.`);
+  } else if (plan.skippedInject) {
+    lines.push("No closure reset injected — no remaining command budget.");
+  }
+  for (const budget of budgets) {
+    lines.push(escapeHtml(formatClosureBudgetWarning(budget)));
+  }
   els.closureResetWarning.hidden = false;
-  els.closureResetWarning.textContent = plan.warnings.join(" ");
+  els.closureResetWarning.classList.toggle("is-over", over || Boolean(plan.skippedInject));
+  els.closureResetWarning.innerHTML = lines.map((line) => `<span>${line}</span>`).join("");
 }
 
 function updateCombinedTime(included = includedShows()) {
@@ -917,6 +932,15 @@ function loadSamples() {
     fileFrom("still-glow.wav", wav, "audio/wav"),
     fileFrom("cybertruck-wide.fseq", createSampleFseq({ frameCount: 60, channelCount: 200, fill: 55 })),
     fileFrom("cybertruck-wide.wav", wav, "audio/wav"),
+    fileFrom(
+      "liftgate-busy.fseq",
+      createSampleFseq({
+        frameCount: 10,
+        fill: 0,
+        channelValues: { 41: (i) => (i % 2 === 0 ? 64 : 0) },
+      })
+    ),
+    fileFrom("liftgate-busy.wav", wav, "audio/wav"),
     fileFrom(
       "trunk-left-open.fseq",
       createSampleFseq({ frameCount: 50, fill: 0, channelValues: { 41: 64 } })
