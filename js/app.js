@@ -15,6 +15,7 @@ import {
   finishFrameScan,
   stemOf,
   extensionOf,
+  displayShowName,
   defaultInclude,
   isSelectableForJoin,
   resolveJoinTarget,
@@ -41,6 +42,7 @@ import {
   planClosureResets,
 } from "./closures.js";
 import { createZipStore } from "./zip.js";
+import { loadSavedJoinOptions, writeJoinOptionsCookie } from "./join-options.js";
 
 const ACCEPTED = new Set(["fseq", "mp3", "wav"]);
 const PREVIEW_ICON_PLAY =
@@ -64,6 +66,7 @@ const state = {
   upgrade48to200: false,
   convert50to20: false,
   resetClosures: true,
+  ...loadSavedJoinOptions(),
 };
 
 const els = {
@@ -95,6 +98,16 @@ function joinOptions() {
     convert50to20: state.convert50to20,
     resetClosures: state.resetClosures,
   };
+}
+
+function persistJoinOptions() {
+  writeJoinOptionsCookie(joinOptions());
+}
+
+function syncJoinOptionInputs() {
+  if (els.upgrade48to200) els.upgrade48to200.checked = state.upgrade48to200;
+  if (els.convert50to20) els.convert50to20.checked = state.convert50to20;
+  if (els.resetClosures) els.resetClosures.checked = state.resetClosures;
 }
 
 function fileKey(file) {
@@ -309,7 +322,7 @@ function sortShows() {
   const key = state.sortKey;
 
   const valueOf = (show) => {
-    if (key === "name") return show.name.toLowerCase();
+    if (key === "name") return displayShowName(show.name).toLowerCase();
     if (key === "channels") return show.header?.channelCount ?? -1;
     if (key === "stepTime") return show.header?.stepTime ?? -1;
     if (key === "duration") return show.header ? durationMs(show.header) : -1;
@@ -483,11 +496,12 @@ function render() {
       const statusText = pairNote || show.error || "";
       const canPreview = hasPreviewableAudio(show);
       const validatorFailed = !show.validation.ok && !show.orphanAudio;
+      const shownName = displayShowName(show.name);
       const playButton = canPreview
-        ? `<button type="button" class="preview-play" data-action="preview" title="Play" aria-label="Play ${escapeAttr(show.name)}" aria-pressed="false">${PREVIEW_ICON_PLAY}</button>`
+        ? `<button type="button" class="preview-play" data-action="preview" title="Play" aria-label="Play ${escapeAttr(shownName)}" aria-pressed="false">${PREVIEW_ICON_PLAY}</button>`
         : "";
       const scrubber = canPreview
-        ? `<input type="range" class="preview-scrubber" min="0" max="1000" value="0" step="1" hidden aria-label="Seek ${escapeAttr(show.name)}" />`
+        ? `<input type="range" class="preview-scrubber" min="0" max="1000" value="0" step="1" hidden aria-label="Seek ${escapeAttr(shownName)}" />`
         : "";
       const metaBits = [
         statusText ? `<span class="row-status">${escapeHtml(statusText)}</span>` : "",
@@ -503,16 +517,16 @@ function render() {
       return `
         <tr class="${rowClass}" data-id="${escapeAttr(show.id)}" draggable="false">
           <td class="col-tight">
-            <input type="checkbox" data-action="include" ${show.include ? "checked" : ""} ${selectable ? "" : "disabled"} aria-label="Include ${escapeAttr(show.name)}" />
+            <input type="checkbox" data-action="include" ${show.include ? "checked" : ""} ${selectable ? "" : "disabled"} aria-label="Include ${escapeAttr(shownName)}" />
           </td>
           <td class="col-tight">
-            <button type="button" class="drag-handle" data-action="drag" title="Drag to reorder" aria-label="Reorder ${escapeAttr(show.name)}">⋮⋮</button>
+            <button type="button" class="drag-handle" data-action="drag" title="Drag to reorder" aria-label="Reorder ${escapeAttr(shownName)}">⋮⋮</button>
             <span class="num">${index + 1}</span>
           </td>
           <td class="name-cell">
             <div class="name-main">
               ${playButton}
-              <span class="name-text" title="${escapeAttr(show.path)}">${escapeHtml(show.name)}</span>
+              <span class="name-text" title="${escapeAttr(show.path)}">${escapeHtml(shownName)}</span>
             </div>
             ${metaBits ? `<div class="name-meta">${metaBits}</div>` : ""}
             ${scrubber}
@@ -1060,16 +1074,20 @@ function applyJoinOptionChange() {
 
 els.upgrade48to200?.addEventListener("change", () => {
   state.upgrade48to200 = Boolean(els.upgrade48to200.checked);
+  persistJoinOptions();
   applyJoinOptionChange();
 });
 els.convert50to20?.addEventListener("change", () => {
   state.convert50to20 = Boolean(els.convert50to20.checked);
+  persistJoinOptions();
   applyJoinOptionChange();
 });
 els.resetClosures?.addEventListener("change", () => {
   state.resetClosures = Boolean(els.resetClosures.checked);
+  persistJoinOptions();
   applyJoinOptionChange();
 });
+syncJoinOptionInputs();
 els.joinBtn.addEventListener("click", joinAndDownload);
 
 els.dropzone.addEventListener("click", (event) => {

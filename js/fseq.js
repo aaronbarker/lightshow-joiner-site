@@ -1208,3 +1208,10 @@ export function extensionOf(filename) {
   const dot = base.lastIndexOf(".");
   return dot > 0 ? base.slice(dot + 1).toLowerCase() : "";
 }
+
+/** Table label: strip a trailing `.fseq` only (any case). Other extensions stay. */
+export function displayShowName(name) {
+  if (name == null) return "";
+  const base = String(name).replaceAll("\\", "/").split("/").pop() || String(name);
+  return base.replace(/\.fseq$/i, "");
+}

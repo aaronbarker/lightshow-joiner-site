@@ -10,6 +10,7 @@ import {
   formatDurationWords,
   totalIncludedDurationMs,
   stemOf,
+  displayShowName,
   expandFrameChannels,
   upgradeFseqChannels,
   convertStepFrames,
@@ -378,6 +379,23 @@ test("formatDuration and stem helpers", () => {
   assert.equal(formatDuration(90_000), "1:30");
   assert.equal(formatDuration(3_661_000), "1:01:01");
   assert.equal(stemOf("Shows/Halloween Intro.FSEQ"), "halloween intro");
+});
+
+test("displayShowName strips only a trailing .fseq (case-insensitive)", () => {
+  assert.equal(displayShowName("halloween-intro.fseq"), "halloween-intro");
+  assert.equal(displayShowName("halloween-intro.FSEQ"), "halloween-intro");
+  assert.equal(displayShowName("Halloween Intro.Fseq"), "Halloween Intro");
+  assert.equal(displayShowName("Shows/halloween-intro.fseq"), "halloween-intro");
+  assert.equal(displayShowName("Shows\\pumpkin-dance.FSEQ"), "pumpkin-dance");
+  assert.equal(displayShowName("lonely-track.wav"), "lonely-track.wav");
+  assert.equal(displayShowName("notes.fseq.bak"), "notes.fseq.bak");
+  assert.equal(displayShowName("my.fseq.name.mp3"), "my.fseq.name.mp3");
+  assert.equal(displayShowName("plain"), "plain");
+  assert.equal(displayShowName(""), "");
+  assert.equal(displayShowName(null), "");
+  // Pairing still uses the real filename/stem, not the display label.
+  assert.equal(stemOf("halloween-intro.fseq"), "halloween-intro");
+  assert.equal(stemOf("halloween-intro.fseq"), displayShowName("halloween-intro.fseq").toLowerCase());
 });
 
 test("joinDurationMs follows 50→20 wall-clock and ignores 48→200", () => {
