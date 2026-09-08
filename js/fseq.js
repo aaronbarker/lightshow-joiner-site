@@ -108,7 +108,12 @@ export function isIdleFseqFrame(frameData, offset, channelCount) {
   return true;
 }
 
-/** Last 0-based source frame with any non-zero light or non-Idle closure. `-1` if all idle. */
+/**
+ * Last 0-based source frame with any non-zero light or non-Idle closure.
+ * Returns `-1` when every frame is idle. Returns `null` when the payload is
+ * missing or channel/frame counts are invalid — not an index; callers must
+ * treat `null` as unknown (do not trim).
+ */
 export function lastActiveFrameIndex(frameData, channelCount, frameCount) {
   const channels = Number(channelCount);
   const frames = Number(frameCount);

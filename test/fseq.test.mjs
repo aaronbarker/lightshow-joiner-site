@@ -631,6 +631,17 @@ function sampleWithIdleTail({ activeFrames = 10, idleFrames = 15, fill = 7 } = {
   });
 }
 
+test("lastActiveFrameIndex is -1 when idle and null when the payload is unusable", () => {
+  const idle = new Uint8Array(48 * 3);
+  assert.equal(lastActiveFrameIndex(idle, 48, 3), -1);
+  const lit = new Uint8Array(48 * 3);
+  lit[48] = 4;
+  assert.equal(lastActiveFrameIndex(lit, 48, 3), 1);
+  assert.equal(lastActiveFrameIndex(null, 48, 3), null);
+  assert.equal(lastActiveFrameIndex(idle, Number.NaN, 3), null);
+  assert.equal(lastActiveFrameIndex(idle, 48, 0), null);
+});
+
 test("planIdleTailTrim trims an idle surplus past audio", () => {
   const header = parseFseqHeader(sampleWithIdleTail({ activeFrames: 200, idleFrames: 150 }));
   const plan = planIdleTailTrim(header, 4000, 199, {});
@@ -656,6 +667,13 @@ test("planIdleTailTrim is a no-op when audio and FSEQ already match", () => {
   assert.equal(plan.action, "none");
   assert.equal(plan.keepFrameCount, undefined);
   assert.equal(plan.surplusFrames, 0);
+});
+
+test("planIdleTailTrim does not trim when lastActiveFrame is unknown", () => {
+  const header = parseFseqHeader(createSampleFseq({ frameCount: 350, fill: 0 }));
+  const plan = planIdleTailTrim(header, 4000, null, {});
+  assert.equal(plan.action, "none");
+  assert.equal(plan.keepFrameCount, undefined);
 });
 
 test("planIdleTailTrim leaves sub-threshold surplus alone", () => {

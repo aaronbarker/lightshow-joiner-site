@@ -289,7 +289,7 @@ async function readShowFrameExtras(file, header) {
       const from = start + frame * channelCount;
       const frameBuf = await file.slice(from, from + n * channelCount).arrayBuffer();
       const frameData = new Uint8Array(frameBuf);
-      if (frameData.byteLength < n * channelCount) break;
+      if (frameData.byteLength < n * channelCount) return empty;
       addFrameScanChunk(state, frameData, n);
     }
     const extras = finishFrameScan(state);
