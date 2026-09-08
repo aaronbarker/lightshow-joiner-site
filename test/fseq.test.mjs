@@ -30,6 +30,12 @@ import {
   formatJoinVerifySummary,
   joinDurationMs,
   joinFrameCount,
+  lastActiveFrameIndex,
+  idleTailFramesAfterJoin,
+  planIdleTailTrim,
+  createFrameScanState,
+  addFrameScanChunk,
+  finishFrameScan,
 } from "../js/fseq.js";
 
 test("parses uncompressed V2 PSEQ header fields", () => {
@@ -557,6 +563,33 @@ test("validateJoinedSegments reports a channel-count mismatch", () => {
   assert.equal(result.segments[1].badge, "Join mismatch · channels");
 });
 
+test("validateJoinedSegments still advances offset after a step_time mismatch", () => {
+  const a = createSampleFseq({ frameCount: 5, stepTime: 20, fill: 1 });
+  const mid = createSampleFseq({ frameCount: 6, stepTime: 20, fill: 9 });
+  const c = createSampleFseq({ frameCount: 4, stepTime: 20, fill: 3 });
+  const joined = joinFseqBuffers([a, mid, c]);
+  const slowMid = createSampleFseq({ frameCount: 6, stepTime: 50, fill: 9 });
+  const result = validateJoinedSegments(joined.buffer, [a, slowMid, c]);
+  assert.equal(result.ok, false);
+  assert.equal(result.segments[1].reason, "step_time");
+  assert.equal(result.segments[2].startFrame, 11);
+  assert.equal(result.segments[2].ok, true);
+});
+
+test("validateJoinedSegments still advances offset after a channel_count mismatch", () => {
+  const a = createSampleFseq({ channelCount: 48, frameCount: 5, fill: 1 });
+  const mid = createSampleFseq({ channelCount: 48, frameCount: 6, fill: 9 });
+  const c = createSampleFseq({ channelCount: 48, frameCount: 4, fill: 3 });
+  const joined = joinFseqBuffers([a, mid, c]);
+  const wrongMid = createSampleFseq({ channelCount: 200, frameCount: 6, fill: 2 });
+  const result = validateJoinedSegments(joined.buffer, [a, wrongMid, c]);
+  assert.equal(result.ok, false);
+  assert.equal(result.segments[1].reason, "channel_count");
+  assert.equal(result.segments[2].startFrame, 11);
+  assert.equal(result.segments[2].ok, true);
+  assert.equal(result.leftoverFrames, 0);
+});
+
 test("validateJoinedSegments catches a nine-show last-segment swap", () => {
   const sources = Array.from({ length: 9 }, (_, i) =>
     createSampleFseq({ frameCount: 4 + i, fill: (i + 1) * 11 })
@@ -588,4 +621,152 @@ test("join can combine 50→20 conversion with 48→200 upgrade", () => {
   assert.ok(first.subarray(0, 48).every((value) => value === 4));
   assert.ok(first.subarray(48).every((value) => value === 0));
   assert.ok(data.subarray(5 * 200).every((value) => value === 6));
+});
+
+function sampleWithIdleTail({ activeFrames = 10, idleFrames = 15, fill = 7 } = {}) {
+  return createSampleFseq({
+    frameCount: activeFrames + idleFrames,
+    fill: 0,
+    frameFill: (i) => (i < activeFrames ? fill : 0),
+  });
+}
+
+test("lastActiveFrameIndex is -1 when idle and null when the payload is unusable", () => {
+  const idle = new Uint8Array(48 * 3);
+  assert.equal(lastActiveFrameIndex(idle, 48, 3), -1);
+  const lit = new Uint8Array(48 * 3);
+  lit[48] = 4;
+  assert.equal(lastActiveFrameIndex(lit, 48, 3), 1);
+  assert.equal(lastActiveFrameIndex(null, 48, 3), null);
+  assert.equal(lastActiveFrameIndex(idle, Number.NaN, 3), null);
+  assert.equal(lastActiveFrameIndex(idle, 48, 0), null);
+});
+
+test("planIdleTailTrim trims an idle surplus past audio", () => {
+  const header = parseFseqHeader(sampleWithIdleTail({ activeFrames: 200, idleFrames: 150 }));
+  const plan = planIdleTailTrim(header, 4000, 199, {});
+  assert.equal(plan.action, "trim");
+  assert.equal(plan.surplusFrames, 150);
+  assert.equal(plan.surplusMs, 3000);
+  assert.equal(plan.keepFrameCount, 200);
+  assert.equal(plan.fseqMs, 4000);
+});
+
+test("planIdleTailTrim warns and does not trim an active surplus", () => {
+  const header = parseFseqHeader(createSampleFseq({ frameCount: 350, fill: 21 }));
+  const plan = planIdleTailTrim(header, 4000, 349, {});
+  assert.equal(plan.action, "active");
+  assert.equal(plan.keepFrameCount, undefined);
+  assert.equal(plan.surplusMs, 3000);
+  assert.equal(plan.fseqMs, 7000);
+});
+
+test("planIdleTailTrim is a no-op when audio and FSEQ already match", () => {
+  const header = parseFseqHeader(createSampleFseq({ frameCount: 200, fill: 4 }));
+  const plan = planIdleTailTrim(header, 4000, 199, {});
+  assert.equal(plan.action, "none");
+  assert.equal(plan.keepFrameCount, undefined);
+  assert.equal(plan.surplusFrames, 0);
+});
+
+test("planIdleTailTrim does not trim when lastActiveFrame is unknown", () => {
+  const header = parseFseqHeader(createSampleFseq({ frameCount: 350, fill: 0 }));
+  const plan = planIdleTailTrim(header, 4000, null, {});
+  assert.equal(plan.action, "none");
+  assert.equal(plan.keepFrameCount, undefined);
+});
+
+test("planIdleTailTrim leaves sub-threshold surplus alone", () => {
+  const header = parseFseqHeader(createSampleFseq({ frameCount: 201, fill: 0 }));
+  const plan = planIdleTailTrim(header, 4000, -1, {});
+  assert.equal(plan.action, "none");
+  assert.equal(plan.keepFrameCount, undefined);
+});
+
+test("idle tail mapping follows 50→20 output frames", () => {
+  const header = parseFseqHeader(createSampleFseq({ frameCount: 4, stepTime: 50, fill: 0 }));
+  assert.equal(idleTailFramesAfterJoin(header, 1, { convert50to20: true }), 5);
+  const plan = planIdleTailTrim(header, 100, 1, { convert50to20: true });
+  assert.equal(plan.action, "trim");
+  assert.equal(plan.keepFrameCount, 5);
+});
+
+test("join trims idle FSEQ tails and verify uses post-trim lengths", () => {
+  const idle = sampleWithIdleTail({ activeFrames: 10, idleFrames: 20, fill: 5 });
+  const other = createSampleFseq({ frameCount: 8, fill: 9 });
+  const options = { keepFrameCounts: [10, undefined], showNames: ["idle.fseq", "other.fseq"] };
+  const joined = joinFseqBuffers([idle, other], options);
+  assert.equal(joined.totalFrames, 18);
+  const data = new Uint8Array(joined.buffer, parseFseqHeader(joined.buffer).dataOffset);
+  assert.ok(data.subarray(0, 10 * 48).every((value) => value === 5));
+  assert.ok(data.subarray(10 * 48).every((value) => value === 9));
+
+  const verify = validateJoinedSegments(joined.buffer, [idle, other], options);
+  assert.equal(verify.ok, true);
+  assert.equal(verify.segments[0].frameCount, 10);
+  assert.equal(verify.segments[1].startFrame, 10);
+  assert.equal(verify.expectedFrames, 18);
+});
+
+test("join leaves an active tail in place", () => {
+  const active = createSampleFseq({ frameCount: 30, fill: 11 });
+  const other = createSampleFseq({ frameCount: 8, fill: 2 });
+  const joined = joinFseqBuffers([active, other], { keepFrameCounts: [undefined, undefined] });
+  assert.equal(joined.totalFrames, 38);
+});
+
+test("joinDurationMs and included totals honor keepFrameCount after trim", () => {
+  const header = parseFseqHeader(createSampleFseq({ frameCount: 350, stepTime: 20 }));
+  assert.equal(joinDurationMs(header, { keepFrameCount: 200 }), 4000);
+  const shows = [
+    { header: parseFseqHeader(createSampleFseq({ frameCount: 350, stepTime: 20 })) },
+    { header: parseFseqHeader(createSampleFseq({ frameCount: 100, stepTime: 20 })) },
+  ];
+  assert.equal(totalIncludedDurationMs(shows, { keepFrameCounts: [200, undefined] }), 6000);
+});
+
+test("closure-reset tail is appended after an idle-tail trim", () => {
+  const openTrunk = createSampleFseq({
+    frameCount: 30,
+    fill: 0,
+    frameFill: (i) => (i < 10 ? 7 : 0),
+    channelValues: { 41: (i) => (i < 10 ? 64 : 0) },
+  });
+  const dance = createSampleFseq({ frameCount: 8, fill: 3 });
+  const options = {
+    resetClosures: true,
+    showNames: ["open.fseq", "dance.fseq"],
+    keepFrameCounts: [10, undefined],
+  };
+  const joined = joinFseqBuffers([openTrunk, dance], options);
+  assert.equal(joined.totalFrames, 10 + 8 + 200);
+  const verify = validateJoinedSegments(joined.buffer, [openTrunk, dance], options);
+  assert.equal(verify.ok, true);
+  assert.equal(verify.segments[0].frameCount, 10);
+  assert.equal(verify.segments[1].tailFrames, 200);
+});
+
+test("chunked frame scan matches a full last-active and change-shift pass", () => {
+  const buffer = createSampleFseq({
+    frameCount: 40,
+    stepTime: 50,
+    frameFill: (i) => {
+      if (i >= 36) return 0;
+      if (i >= 20) return 8;
+      if (i >= 8) return 5;
+      return 1;
+    },
+  });
+  const header = parseFseqHeader(buffer);
+  const frames = new Uint8Array(buffer, header.dataOffset, header.channelCount * header.frameCount);
+  const fullLast = lastActiveFrameIndex(frames, header.channelCount, header.frameCount);
+  const fullShift = stepConvertChangeShiftStats(frames, header.channelCount, header.frameCount);
+  const state = createFrameScanState(header.channelCount, { trackChangeShift: true });
+  addFrameScanChunk(state, frames.subarray(0, 12 * header.channelCount), 12);
+  addFrameScanChunk(state, frames.subarray(12 * header.channelCount, 27 * header.channelCount), 15);
+  addFrameScanChunk(state, frames.subarray(27 * header.channelCount), 13);
+  const extras = finishFrameScan(state);
+  assert.equal(extras.lastActiveFrame, fullLast);
+  assert.equal(extras.lastActiveFrame, 35);
+  assert.deepEqual(extras.changeShift, fullShift);
 });

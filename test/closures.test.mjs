@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   analyzeClosureUsage,
+  createClosureUsageScanner,
   buildResetTailFrames,
   CLOSURE_CMD,
   closureBudgets,
@@ -48,6 +49,21 @@ test("analyzeClosureUsage counts contiguous Open/Close/Dance runs", () => {
   assert.equal(usage.liftgate.last, 64);
   assert.equal(usage.mirrorL.used, false);
   assert.equal(usage.chargePort.count, 0);
+});
+
+test("closure scanner matches a full pass across chunks", () => {
+  const channels = 48;
+  const frames = 9;
+  const data = new Uint8Array(frames * channels);
+  const lift = RESET_CLOSURES.liftgate.channel - 1;
+  const seq = [0, 64, 64, 0, 192, 192, 255, 64, 64];
+  for (let f = 0; f < frames; f += 1) data[f * channels + lift] = seq[f];
+
+  const scanner = createClosureUsageScanner(channels);
+  scanner.addFrames(data.subarray(0, 4 * channels), 4);
+  scanner.addFrames(data.subarray(4 * channels), 5);
+  assert.deepEqual(scanner.result(), analyzeClosureUsage(data, channels, frames));
+  assert.equal(scanner.result().liftgate.count, 3);
 });
 
 test("Idle and Stop do not count as actuations", () => {

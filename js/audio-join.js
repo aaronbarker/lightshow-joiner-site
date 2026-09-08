@@ -69,10 +69,43 @@ export function formatAudioAlignNote(deltaMs, thresholdMs = AUDIO_ALIGN_NOTE_MS)
   return `${label} will be trimmed from audio to match fseq timing`;
 }
 
+export function formatIdleTailTrimNote(surplusMs) {
+  if (!Number.isFinite(surplusMs) || surplusMs < AUDIO_ALIGN_NOTE_MS) return "";
+  return `${formatAlignSeconds(surplusMs)} idle FSEQ tail will be trimmed to match audio`;
+}
+
+export function formatActiveTailWarningNote(surplusMs) {
+  if (!Number.isFinite(surplusMs) || surplusMs < AUDIO_ALIGN_NOTE_MS) return "";
+  return `FSEQ runs ${formatAlignSeconds(surplusMs)} past audio; trailing frames are active`;
+}
+
+/** Row note: idle trim, active-tail warning, or the existing pad/trim audio line. */
+export function formatShowAlignNote(plan, extraMs = 0, thresholdMs = AUDIO_ALIGN_NOTE_MS) {
+  if (!plan) return "";
+  if (plan.action === "trim") return formatIdleTailTrimNote(plan.surplusMs);
+  if (plan.action === "active") return formatActiveTailWarningNote(plan.surplusMs);
+  const targetMs = (Number.isFinite(plan.fseqMs) ? plan.fseqMs : 0) + (Number(extraMs) || 0);
+  return formatAudioAlignNote(audioAlignDeltaMs(plan.audioMs, targetMs), thresholdMs);
+}
+
+function bytesFromWavBuffer(buffer) {
+  if (!buffer) return null;
+  if (buffer instanceof ArrayBuffer) return new Uint8Array(buffer);
+  if (ArrayBuffer.isView(buffer)) {
+    return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  }
+  if (buffer.buffer instanceof ArrayBuffer && Number.isFinite(buffer.byteLength)) {
+    const offset = Number.isFinite(buffer.byteOffset) ? buffer.byteOffset : 0;
+    return new Uint8Array(buffer.buffer, offset, buffer.byteLength);
+  }
+  return new Uint8Array(buffer);
+}
+
 /** PCM WAV duration from RIFF header + data chunk. */
 export function wavDurationMs(buffer) {
   if (!buffer || buffer.byteLength < 44) return null;
-  const bytes = buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : new Uint8Array(buffer.buffer || buffer);
+  const bytes = bytesFromWavBuffer(buffer);
+  if (!bytes || bytes.byteLength < 44) return null;
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const tag = (offset, length) => String.fromCharCode(...bytes.subarray(offset, offset + length));
   if (tag(0, 4) !== "RIFF" || tag(8, 4) !== "WAVE") return null;
@@ -107,7 +140,7 @@ export function audioFitArgs(inputName, outputName, durationSec) {
   return ["-y", "-i", inputName, "-af", "apad", "-t", formatFfmpegDuration(durationSec), "-q:a", "9", outputName];
 }
 
-export function summarizeAudioAlign(deltas) {
+export function summarizeAudioAlign(deltas, { idleTrimmed = 0, activeTails = 0 } = {}) {
   let padded = 0;
   let trimmed = 0;
   for (const delta of deltas || []) {
@@ -115,11 +148,24 @@ export function summarizeAudioAlign(deltas) {
     if (delta >= AUDIO_ALIGN_NOTE_MS) padded += 1;
     else if (delta <= -AUDIO_ALIGN_NOTE_MS) trimmed += 1;
   }
-  if (!padded && !trimmed) return "";
   const parts = [];
-  if (padded) parts.push(`padded ${padded}`);
-  if (trimmed) parts.push(`trimmed ${trimmed}`);
-  return `Audio ${parts.join(" and ")} to match FSEQ timing.`;
+  if (idleTrimmed) {
+    parts.push(
+      `Idle FSEQ tail trimmed on ${idleTrimmed} show${idleTrimmed === 1 ? "" : "s"}.`
+    );
+  }
+  if (activeTails) {
+    parts.push(
+      `FSEQ ran past audio with active trailing frames on ${activeTails} show${activeTails === 1 ? "" : "s"}.`
+    );
+  }
+  if (padded || trimmed) {
+    const audioParts = [];
+    if (padded) audioParts.push(`padded ${padded}`);
+    if (trimmed) audioParts.push(`trimmed ${trimmed}`);
+    parts.push(`Audio ${audioParts.join(" and ")} to match FSEQ timing.`);
+  }
+  return parts.join(" ");
 }
 
 export async function measureMediaDurationMs(file) {
