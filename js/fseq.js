@@ -19,6 +19,8 @@
 import {
   analyzeClosureUsage,
   buildResetTailFrames,
+  createClosureUsageScanner,
+  emptyClosureUsage,
   emptyResetPlan,
   planClosureResets,
 } from "./closures.js";
@@ -28,6 +30,8 @@ export const DEFAULT_CHANNELS = 48;
 export const DEFAULT_STEP_MS = 20;
 export const SKIP_STEP_MS = 50;
 export const SKIP_CHANNELS = 200;
+/** Same ballpark as AUDIO_ALIGN_NOTE_MS: only treat FSEQ-past-audio as a tail. */
+export const IDLE_TAIL_TRIM_MS = 50;
 
 export function readAscii(buffer, offset, length) {
   const bytes = new Uint8Array(buffer, offset, length);
@@ -75,18 +79,123 @@ export function durationMs(header) {
 }
 
 /** Frame count after the same 50→20 expand used at join. 48→200 does not change frames. */
-export function joinFrameCount(header, { convert50to20 = false } = {}) {
+export function joinFrameCount(header, { convert50to20 = false, keepFrameCount } = {}) {
   if (!header) return 0;
-  if (convert50to20 && header.stepTime === SKIP_STEP_MS) {
-    return convertedFrameCount(header.frameCount, header.stepTime, DEFAULT_STEP_MS);
+  let frames =
+    convert50to20 && header.stepTime === SKIP_STEP_MS
+      ? convertedFrameCount(header.frameCount, header.stepTime, DEFAULT_STEP_MS)
+      : header.frameCount;
+  if (Number.isFinite(keepFrameCount)) {
+    frames = Math.min(frames, Math.max(0, Math.floor(keepFrameCount)));
   }
-  return header.frameCount;
+  return frames;
 }
 
 /** Wall-clock duration after join transforms (50→20 preserves length except odd-frame rounding). */
 export function joinDurationMs(header, options = {}) {
   if (!header) return 0;
   return joinFrameCount(header, options) * effectiveStepTime(header.stepTime, options);
+}
+
+/** A frame is idle when every light channel is 0 and every closure is Idle (`0`). */
+export function isIdleFseqFrame(frameData, offset, channelCount) {
+  const channels = Number(channelCount);
+  if (!frameData || !Number.isFinite(channels) || channels < 1) return false;
+  if (offset < 0 || offset + channels > frameData.byteLength) return false;
+  for (let i = 0; i < channels; i += 1) {
+    if (frameData[offset + i] !== 0) return false;
+  }
+  return true;
+}
+
+/** Last 0-based source frame with any non-zero light or non-Idle closure. `-1` if all idle. */
+export function lastActiveFrameIndex(frameData, channelCount, frameCount) {
+  const channels = Number(channelCount);
+  const frames = Number(frameCount);
+  if (!frameData || !Number.isFinite(channels) || !Number.isFinite(frames) || channels < 1 || frames < 1) {
+    return null;
+  }
+  let last = -1;
+  for (let f = 0; f < frames; f += 1) {
+    if (!isIdleFseqFrame(frameData, f * channels, channels)) last = f;
+  }
+  return last;
+}
+
+/**
+ * First output frame (after 50→20) that is idle through the end.
+ * Unknown `lastActiveFrame` means "cannot prove idle" (no tail).
+ */
+export function firstIdleOutputFrame(header, lastActiveFrame, options = {}) {
+  const outFrames = joinFrameCount(header, { convert50to20: options.convert50to20 });
+  if (!header || lastActiveFrame == null || !Number.isFinite(lastActiveFrame)) return outFrames;
+  if (lastActiveFrame < 0) return 0;
+  if (options.convert50to20 && header.stepTime === SKIP_STEP_MS) {
+    return Math.min(outFrames, Math.ceil(((lastActiveFrame + 1) * header.stepTime) / DEFAULT_STEP_MS));
+  }
+  return Math.min(outFrames, lastActiveFrame + 1);
+}
+
+export function idleTailFramesAfterJoin(header, lastActiveFrame, options = {}) {
+  const outFrames = joinFrameCount(header, { convert50to20: options.convert50to20 });
+  return Math.max(0, outFrames - firstIdleOutputFrame(header, lastActiveFrame, options));
+}
+
+/**
+ * If the transformed FSEQ runs ≥ threshold past audio and those surplus
+ * frames are idle, trim them. Active surplus is left in place (caller pads).
+ */
+export function planIdleTailTrim(header, audioMs, lastActiveFrame, options = {}) {
+  const thresholdMs = Number.isFinite(options.thresholdMs) ? options.thresholdMs : IDLE_TAIL_TRIM_MS;
+  const outFrames = joinFrameCount(header, { convert50to20: options.convert50to20 });
+  const step = effectiveStepTime(header?.stepTime, options);
+  const fseqMs = outFrames * step;
+  const empty = {
+    action: "none",
+    surplusFrames: 0,
+    surplusMs: 0,
+    keepFrameCount: undefined,
+    fseqMs,
+    audioMs,
+    idleTailFrames: 0,
+  };
+  if (!header || !Number.isFinite(audioMs) || audioMs < 0 || !step || outFrames < 1) {
+    return empty;
+  }
+  const overMs = fseqMs - audioMs;
+  if (overMs < thresholdMs) {
+    return { ...empty, surplusMs: Math.max(0, overMs) };
+  }
+  const keep = Math.max(1, Math.round(audioMs / step));
+  const surplusFrames = Math.max(0, outFrames - keep);
+  if (surplusFrames < 1) {
+    return { ...empty, surplusMs: overMs };
+  }
+  const surplusMs = surplusFrames * step;
+  const idleTailFrames = idleTailFramesAfterJoin(header, lastActiveFrame, options);
+  if (lastActiveFrame == null) {
+    return { ...empty, surplusFrames, surplusMs, idleTailFrames: 0 };
+  }
+  if (idleTailFrames >= surplusFrames) {
+    return {
+      action: "trim",
+      surplusFrames,
+      surplusMs,
+      keepFrameCount: outFrames - surplusFrames,
+      fseqMs: (outFrames - surplusFrames) * step,
+      audioMs,
+      idleTailFrames,
+    };
+  }
+  return {
+    action: "active",
+    surplusFrames,
+    surplusMs: overMs,
+    keepFrameCount: undefined,
+    fseqMs,
+    audioMs,
+    idleTailFrames,
+  };
 }
 
 export function formatDuration(ms) {
@@ -131,7 +240,12 @@ export function formatDurationWords(ms) {
 export function totalIncludedDurationMs(shows, options = {}, tails = []) {
   return (shows || []).reduce((sum, show, index) => {
     if (!show?.header) return sum;
-    return sum + joinDurationMs(show.header, options) + (tails[index]?.durationMs || 0);
+    const keepFrameCount = options.keepFrameCounts?.[index];
+    return (
+      sum +
+      joinDurationMs(show.header, { ...options, keepFrameCount }) +
+      (tails[index]?.durationMs || 0)
+    );
   }, 0);
 }
 
@@ -196,8 +310,12 @@ export function effectiveStepTime(stepTime, { convert50to20 = false } = {}) {
 }
 
 function channelPayloadsDiffer(frameData, offA, offB, channelCount) {
+  return framesDiffer(frameData, offA, frameData, offB, channelCount);
+}
+
+function framesDiffer(a, offA, b, offB, channelCount) {
   for (let i = 0; i < channelCount; i += 1) {
-    if (frameData[offA + i] !== frameData[offB + i]) return true;
+    if (a[offA + i] !== b[offB + i]) return true;
   }
   return false;
 }
@@ -244,6 +362,62 @@ export function stepConvertChangeShiftStatsFromBuffer(buffer) {
   if (header.compression !== 0) return null;
   const frameData = new Uint8Array(buffer, header.dataOffset);
   return stepConvertChangeShiftStats(frameData, header.channelCount, header.frameCount);
+}
+
+/**
+ * Chunked ingest scan: last active frame, optional 50→20 shift stats, closures.
+ * Peak memory is one chunk plus the previous frame, not the full payload.
+ */
+export function createFrameScanState(channelCount, { trackChangeShift = false } = {}) {
+  const channels = Number(channelCount);
+  return {
+    channelCount: Number.isFinite(channels) && channels > 0 ? Math.floor(channels) : 0,
+    framesSeen: 0,
+    lastActiveFrame: -1,
+    changeShift: trackChangeShift ? { shifted: 0, total: 0 } : null,
+    prevFrame: null,
+    closureScanner: createClosureUsageScanner(channelCount),
+  };
+}
+
+export function addFrameScanChunk(state, frameData, frameCount) {
+  if (!state?.channelCount || !frameData) return state;
+  const channels = state.channelCount;
+  const available = Math.floor(frameData.byteLength / channels);
+  const n = Math.min(Number(frameCount) || 0, available);
+  if (n < 1) return state;
+
+  state.closureScanner.addFrames(frameData, n);
+  for (let i = 0; i < n; i += 1) {
+    if (!isIdleFseqFrame(frameData, i * channels, channels)) {
+      state.lastActiveFrame = state.framesSeen + i;
+    }
+  }
+  if (state.changeShift) {
+    for (let i = 0; i < n; i += 1) {
+      const global = state.framesSeen + i;
+      if (global < 1) continue;
+      const currOff = i * channels;
+      const prevData = i === 0 ? state.prevFrame : frameData;
+      const prevOff = i === 0 ? 0 : (i - 1) * channels;
+      if (!prevData) continue;
+      if (framesDiffer(prevData, prevOff, frameData, currOff, channels)) {
+        state.changeShift.total += 1;
+        if (global % 2 === 1) state.changeShift.shifted += 1;
+      }
+    }
+  }
+  state.prevFrame = frameData.slice((n - 1) * channels, n * channels);
+  state.framesSeen += n;
+  return state;
+}
+
+export function finishFrameScan(state) {
+  return {
+    lastActiveFrame: state?.lastActiveFrame ?? -1,
+    changeShift: state?.changeShift ?? null,
+    closureUsage: state?.closureScanner?.result?.() || emptyClosureUsage(),
+  };
 }
 
 export function formatStepConvertChangeShiftNote(stats) {
@@ -658,6 +832,17 @@ function activityDetail(activity, channelCount) {
   return text;
 }
 
+function applyKeepFrames(item, keepFrameCount) {
+  if (!item || !Number.isFinite(keepFrameCount)) return item;
+  const keep = Math.max(0, Math.min(item.header.frameCount, Math.floor(keepFrameCount)));
+  if (keep === item.header.frameCount) return item;
+  return {
+    ...item,
+    frameData: item.frameData.subarray(0, keep * item.header.channelCount),
+    header: { ...item.header, frameCount: keep },
+  };
+}
+
 function annotateJoinSegment(segment) {
   if (segment.ok) {
     segment.badge = "Join verified";
@@ -691,7 +876,10 @@ export function validateJoinedSegments(joinedBuffer, sourceBuffers, options = {}
   const sources = sourceBuffers || [];
   const joined = readUncompressedFrames(joinedBuffer, { label: "Joined file" });
   const preparedSources = sources.map((buffer, index) =>
-    readUncompressedFrames(prepareFseqForJoin(buffer, options), { label: `Source ${index + 1}` })
+    applyKeepFrames(
+      readUncompressedFrames(prepareFseqForJoin(buffer, options), { label: `Source ${index + 1}` }),
+      options.keepFrameCounts?.[index]
+    )
   );
   const resetPlan = resetPlanForParsed(preparedSources, options);
   const segments = [];
@@ -726,10 +914,16 @@ export function validateJoinedSegments(joinedBuffer, sourceBuffers, options = {}
       segment.ok = false;
       segment.reason = "channel_count";
       segment.note = `${label} is ${src.header.channelCount}ch after transforms; joined file is ${joined.header.channelCount}ch`;
+      const expected = src.header.frameCount * (joined.header.channelCount || 0);
+      const remaining = Math.max(0, joined.frameData.byteLength - byteOffset);
+      byteOffset += Math.min(expected, remaining);
     } else if (src.header.stepTime !== joined.header.stepTime) {
       segment.ok = false;
       segment.reason = "step_time";
       segment.note = `${label} is ${src.header.stepTime}ms after transforms; joined file is ${joined.header.stepTime}ms`;
+      const expected = src.header.frameCount * (joined.header.channelCount || src.header.channelCount);
+      const remaining = Math.max(0, joined.frameData.byteLength - byteOffset);
+      byteOffset += Math.min(expected, remaining);
     } else {
       const need = src.frameData.byteLength;
       const available = Math.max(0, joined.frameData.byteLength - byteOffset);
@@ -850,16 +1044,25 @@ function appendResetTail(item, tail) {
 
 export function joinFseqBuffers(
   buffers,
-  { upgrade48to200 = false, convert50to20 = false, resetClosures = false, showNames = [] } = {}
+  {
+    upgrade48to200 = false,
+    convert50to20 = false,
+    resetClosures = false,
+    showNames = [],
+    keepFrameCounts,
+  } = {}
 ) {
   if (!buffers || buffers.length < 1) {
     throw new Error("Need at least one FSEQ file to join");
   }
 
-  const options = { upgrade48to200, convert50to20, resetClosures, showNames };
+  const options = { upgrade48to200, convert50to20, resetClosures, showNames, keepFrameCounts };
   const parsed = buffers.map((buffer, index) => {
     const prepared = prepareFseqForJoin(buffer, options);
-    const item = readUncompressedFrames(prepared, { label: `File ${index + 1}` });
+    const item = applyKeepFrames(
+      readUncompressedFrames(prepared, { label: `File ${index + 1}` }),
+      options.keepFrameCounts?.[index]
+    );
     if (item.header.major !== 2) {
       // Match joiner-fseq.py: warn but continue. Caller can surface the version.
     }

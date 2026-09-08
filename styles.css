@@ -516,6 +516,10 @@ input[type="checkbox"]:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.compat-cell .compat-audio.is-warn {
+  color: var(--skip);
+}
+
 .badge.include {
   background: var(--include-soft);
   color: var(--include);

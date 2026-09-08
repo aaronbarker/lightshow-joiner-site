@@ -44,40 +44,67 @@ export function emptyClosureUsage() {
 }
 
 /**
+ * Incremental Open/Close/Dance counter so ingest can scan frame chunks
+ * without holding the full payload.
+ */
+export function createClosureUsageScanner(channelCount) {
+  const usage = emptyClosureUsage();
+  const channels = Number(channelCount);
+  const runValue = Object.fromEntries(RESET_CLOSURE_IDS.map((id) => [id, null]));
+  const specs = Object.values(RESET_CLOSURES);
+
+  return {
+    addFrames(frameData, frameCount) {
+      const frames = Number(frameCount);
+      if (
+        !frameData ||
+        !Number.isFinite(channels) ||
+        channels < 1 ||
+        !Number.isFinite(frames) ||
+        frames < 1
+      ) {
+        return;
+      }
+      const available = Math.floor(frameData.byteLength / channels);
+      const n = Math.min(frames, available);
+      if (n < 1) return;
+
+      for (const spec of specs) {
+        const idx = spec.channel - 1;
+        if (idx >= channels) continue;
+        let count = usage[spec.id].count;
+        let last = usage[spec.id].last;
+        let run = runValue[spec.id];
+        for (let f = 0; f < n; f += 1) {
+          const value = frameData[f * channels + idx];
+          if (isActuatingCommand(value)) {
+            if (run !== value) {
+              count += 1;
+              run = value;
+            }
+            last = value;
+          } else {
+            run = null;
+          }
+        }
+        runValue[spec.id] = run;
+        usage[spec.id] = { count, used: count > 0, last };
+      }
+    },
+    result() {
+      return usage;
+    },
+  };
+}
+
+/**
  * Count Open/Close/Dance runs on each reset closure.
  * A contiguous run of the same actuating byte is one command.
  */
 export function analyzeClosureUsage(frameData, channelCount, frameCount) {
-  const usage = emptyClosureUsage();
-  const channels = Number(channelCount);
-  const frames = Number(frameCount);
-  if (!frameData || !Number.isFinite(channels) || !Number.isFinite(frames) || channels < 1 || frames < 1) {
-    return usage;
-  }
-  const expected = channels * frames;
-  if (frameData.byteLength < expected) return usage;
-
-  for (const spec of Object.values(RESET_CLOSURES)) {
-    const idx = spec.channel - 1;
-    if (idx >= channels) continue;
-    let count = 0;
-    let last = null;
-    let runValue = null;
-    for (let f = 0; f < frames; f += 1) {
-      const value = frameData[f * channels + idx];
-      if (isActuatingCommand(value)) {
-        if (runValue !== value) {
-          count += 1;
-          runValue = value;
-        }
-        last = value;
-      } else {
-        runValue = null;
-      }
-    }
-    usage[spec.id] = { count, used: count > 0, last };
-  }
-  return usage;
+  const scanner = createClosureUsageScanner(channelCount);
+  scanner.addFrames(frameData, frameCount);
+  return scanner.result();
 }
 
 export function resetMovementSec(spec) {

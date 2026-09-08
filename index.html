@@ -9,7 +9,7 @@
       content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260908-reset1" />
+    <link rel="stylesheet" href="./styles.css?v=20260908-idle1" />
   </head>
   <body>
     <main class="app">
@@ -145,7 +145,9 @@
             <strong>Upgrade 48ch → 200ch</strong> to pad 48-channel frames to 200.
             Each track is <strong>padded or trimmed</strong> so its audio length
             matches that show’s FSEQ duration (after those transforms), then
-            concatenated — so later songs do not drift. Optional
+            concatenated — so later songs do not drift. An <strong>idle FSEQ
+            tail</strong> past the audio is dropped instead of padding silence;
+            an active tail keeps today’s pad and shows a warning. Optional
             <strong>Reset closures between shows</strong> injects one
             lights-off tail (and silence) after the last included show that
             still has Tesla command budget — not after every track.
@@ -169,12 +171,13 @@
         50&nbsp;ms shows stay skipped unless <strong>Convert 50ms → 20ms</strong>
         (experimental) is on. 200-channel / 20ms shows join the default set only
         when <strong>Upgrade 48ch → 200ch</strong> is on. Audio is padded or trimmed
-        to each show’s FSEQ length before concat. Optional closure reset injects
+        to each show’s FSEQ length before concat, except an idle FSEQ tail past
+        the song is trimmed instead. Optional closure reset injects
         one defaults pose (trunk/charge closed, windows/mirrors open) at the
         latest point that still fits Tesla’s per-USB-show limits. Validation follows Tesla’s
         <code>validator.py</code> checks.
       </footer>
     </main>
-    <script type="module" src="./js/app.js?v=20260908-reset1"></script>
+    <script type="module" src="./js/app.js?v=20260908-idle1"></script>
   </body>
 </html>

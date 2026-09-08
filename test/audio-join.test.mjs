@@ -7,6 +7,9 @@ import {
   audioAlignDeltaMs,
   formatAudioAlignNote,
   formatAlignSeconds,
+  formatIdleTailTrimNote,
+  formatActiveTailWarningNote,
+  formatShowAlignNote,
   wavDurationMs,
   audioFitArgs,
   summarizeAudioAlign,
@@ -63,6 +66,62 @@ test("wavDurationMs reads createSilentWav length", () => {
   const short = createSilentWav({ durationSec: 0.2, sampleRate: 8000 });
   assert.ok(Math.abs(wavDurationMs(short) - 200) < 1);
   assert.equal(wavDurationMs(new ArrayBuffer(8)), null);
+});
+
+test("wavDurationMs preserves byteOffset on a sliced TypedArray view", () => {
+  const wav = createSilentWav({ durationSec: 0.2, sampleRate: 8000 });
+  const prefix = 80;
+  const suffix = 40;
+  const padded = new Uint8Array(prefix + wav.byteLength + suffix);
+  padded.fill(0xff, 0, prefix);
+  padded.set(new Uint8Array(wav), prefix);
+  padded.fill(0xaa, prefix + wav.byteLength);
+  const view = padded.subarray(prefix, prefix + wav.byteLength);
+  assert.equal(view.byteOffset, prefix);
+  assert.equal(view.byteLength, wav.byteLength);
+  assert.ok(Math.abs(wavDurationMs(view) - 200) < 1);
+  assert.ok(Math.abs(wavDurationMs(new DataView(padded.buffer, prefix, wav.byteLength)) - 200) < 1);
+});
+
+test("formatShowAlignNote covers idle trim, active warning, pad/trim, and no mismatch", () => {
+  assert.equal(
+    formatIdleTailTrimNote(52_000),
+    "52.0s idle FSEQ tail will be trimmed to match audio"
+  );
+  assert.equal(
+    formatActiveTailWarningNote(52_000),
+    "FSEQ runs 52.0s past audio; trailing frames are active"
+  );
+  assert.equal(
+    formatShowAlignNote({ action: "trim", surplusMs: 3000, fseqMs: 4000, audioMs: 4000 }),
+    "3.0s idle FSEQ tail will be trimmed to match audio"
+  );
+  assert.equal(
+    formatShowAlignNote({ action: "active", surplusMs: 3000, fseqMs: 7000, audioMs: 4000 }),
+    "FSEQ runs 3.0s past audio; trailing frames are active"
+  );
+  assert.equal(
+    formatShowAlignNote({ action: "none", fseqMs: 5200, audioMs: 4000 }),
+    "1.2s will be padded to audio to match fseq timing"
+  );
+  assert.equal(
+    formatShowAlignNote({ action: "none", fseqMs: 4000, audioMs: 4800 }),
+    "0.8s will be trimmed from audio to match fseq timing"
+  );
+  assert.equal(formatShowAlignNote({ action: "none", fseqMs: 4000, audioMs: 4000 }), "");
+  assert.equal(formatShowAlignNote({ action: "none", fseqMs: 4040, audioMs: 4000 }), "");
+  assert.equal(formatIdleTailTrimNote(AUDIO_ALIGN_NOTE_MS - 1), "");
+});
+
+test("summarizeAudioAlign mentions idle trims alongside pad/trim counts", () => {
+  assert.equal(
+    summarizeAudioAlign([0], { idleTrimmed: 1 }),
+    "Idle FSEQ tail trimmed on 1 show."
+  );
+  assert.equal(
+    summarizeAudioAlign([200], { idleTrimmed: 1, activeTails: 1 }),
+    "Idle FSEQ tail trimmed on 1 show. FSEQ ran past audio with active trailing frames on 1 show. Audio padded 1 to match FSEQ timing."
+  );
 });
 
 test("audioFitArgs pads then cuts at the FSEQ duration", () => {

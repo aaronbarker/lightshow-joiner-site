@@ -9,6 +9,10 @@ import {
   totalIncludedDurationMs,
   joinDurationMs,
   durationMs,
+  planIdleTailTrim,
+  createFrameScanState,
+  addFrameScanChunk,
+  finishFrameScan,
   stemOf,
   extensionOf,
   defaultInclude,
@@ -18,7 +22,6 @@ import {
   missingPairNote,
   isMissingPair,
   effectiveStepTime,
-  stepConvertChangeShiftStats,
   validateJoinedSegments,
   formatJoinVerifySummary,
   SKIP_STEP_MS,
@@ -26,13 +29,12 @@ import {
 import {
   joinShowAudio,
   preloadFfmpeg,
-  formatAudioAlignNote,
+  formatShowAlignNote,
   audioAlignDeltaMs,
   measureMediaDurationMs,
   summarizeAudioAlign,
 } from "./audio-join.js";
 import {
-  analyzeClosureUsage,
   emptyClosureUsage,
   formatClosureBudgetWarning,
   formatClosureResetSummary,
@@ -254,12 +256,14 @@ async function readShow(file, path, audioFiles) {
     audio,
     changeShift: null,
     closureUsage: emptyClosureUsage(),
+    lastActiveFrame: null,
     audioDurationMs: null,
     joinVerify: null,
   };
   const extras = await readShowFrameExtras(file, header);
   show.changeShift = extras.changeShift;
   show.closureUsage = extras.closureUsage;
+  show.lastActiveFrame = extras.lastActiveFrame;
   if (audio.file) {
     show.audioDurationMs = await measureMediaDurationMs(audio.file);
   }
@@ -267,8 +271,10 @@ async function readShow(file, path, audioFiles) {
   return show;
 }
 
+const FRAME_SCAN_CHUNK = 512;
+
 async function readShowFrameExtras(file, header) {
-  const empty = { changeShift: null, closureUsage: emptyClosureUsage() };
+  const empty = { changeShift: null, closureUsage: emptyClosureUsage(), lastActiveFrame: null };
   if (!file || !header || header.compression !== 0) return empty;
   const channelCount = header.channelCount;
   const frameCount = header.frameCount;
@@ -277,14 +283,20 @@ async function readShowFrameExtras(file, header) {
   const size = channelCount * frameCount;
   if (!Number.isFinite(start) || !Number.isFinite(size) || start < 0 || size < 1) return empty;
   try {
-    const frameBuf = await file.slice(start, start + size).arrayBuffer();
-    const frameData = new Uint8Array(frameBuf);
+    const state = createFrameScanState(channelCount, { trackChangeShift: header.stepTime === SKIP_STEP_MS });
+    for (let frame = 0; frame < frameCount; frame += FRAME_SCAN_CHUNK) {
+      const n = Math.min(FRAME_SCAN_CHUNK, frameCount - frame);
+      const from = start + frame * channelCount;
+      const frameBuf = await file.slice(from, from + n * channelCount).arrayBuffer();
+      const frameData = new Uint8Array(frameBuf);
+      if (frameData.byteLength < n * channelCount) break;
+      addFrameScanChunk(state, frameData, n);
+    }
+    const extras = finishFrameScan(state);
     return {
-      changeShift:
-        header.stepTime === SKIP_STEP_MS
-          ? stepConvertChangeShiftStats(frameData, channelCount, frameCount)
-          : null,
-      closureUsage: analyzeClosureUsage(frameData, channelCount, frameCount),
+      changeShift: header.stepTime === SKIP_STEP_MS ? extras.changeShift : null,
+      closureUsage: extras.closureUsage,
+      lastActiveFrame: extras.lastActiveFrame,
     };
   } catch {
     return empty;
@@ -336,11 +348,30 @@ function closureResetPlan(shows = includedShows()) {
   );
 }
 
+function alignPlanFor(show, options = joinOptions()) {
+  if (!show?.header) return null;
+  return planIdleTailTrim(show.header, show.audioDurationMs, show.lastActiveFrame, options);
+}
+
+function keepFrameCountsFor(shows, options = joinOptions()) {
+  return (shows || []).map((show) => alignPlanFor(show, options)?.keepFrameCount);
+}
+
 function audioAlignNoteFor(show, options = joinOptions(), extraMs = 0) {
-  if (!show?.header || !Number.isFinite(show.audioDurationMs)) return "";
-  const targetMs = joinDurationMs(show.header, options) + (Number(extraMs) || 0);
-  const delta = audioAlignDeltaMs(show.audioDurationMs, targetMs);
-  return formatAudioAlignNote(delta);
+  const plan = alignPlanFor(show, options);
+  if (!plan || !Number.isFinite(show.audioDurationMs)) return "";
+  return formatShowAlignNote(plan, extraMs);
+}
+
+function audioAlignTitleFor(show, options = joinOptions()) {
+  const plan = alignPlanFor(show, options);
+  if (plan?.action === "trim") {
+    return "Idle lights and closures after the audio ends will be dropped from this FSEQ before join.";
+  }
+  if (plan?.action === "active") {
+    return "This FSEQ keeps running after the audio; those frames have lights or closure motion, so audio will be padded.";
+  }
+  return "This track’s length will be padded or trimmed so it matches this show’s FSEQ duration after 50→20 / 48→200.";
 }
 
 function orphanAudioShows() {
@@ -499,7 +530,7 @@ function render() {
             }
             ${
               audioNote
-                ? `<span class="compat-shift compat-audio" title="This track’s length will be padded or trimmed so it matches this show’s FSEQ duration after 50→20 / 48→200.">${escapeHtml(audioNote)}</span>`
+                ? `<span class="compat-shift compat-audio${alignPlanFor(show, options)?.action === "active" ? " is-warn" : ""}" title="${escapeAttr(audioAlignTitleFor(show, options))}">${escapeHtml(audioNote)}</span>`
                 : ""
             }
           </td>
@@ -569,7 +600,8 @@ function updateCombinedTime(included = includedShows()) {
   }
   const options = joinOptions();
   const tails = options.resetClosures ? closureResetPlan(included).tails : [];
-  els.combinedTimeValue.textContent = formatDurationWords(totalIncludedDurationMs(included, options, tails));
+  const withKeep = { ...options, keepFrameCounts: keepFrameCountsFor(included, options) };
+  els.combinedTimeValue.textContent = formatDurationWords(totalIncludedDurationMs(included, withKeep, tails));
   els.combinedTimeValue.classList.remove("is-empty");
 }
 
@@ -780,13 +812,13 @@ function downloadBlob(data, filename, type) {
   URL.revokeObjectURL(url);
 }
 
-function fseqSummary(selected, joined, validation, verify, audioNote = "") {
+function fseqSummary(selected, joined, validation, verify, audioNote = "", options = joinOptions()) {
   const validText = validation.ok
     ? `Tesla validator checks passed (${joined.totalFrames} frames, ${joined.durationS.toFixed(1)}s).`
     : `Joined file failed validator: ${validation.errors.join("; ")}`;
-  const upgradeNote = state.upgrade48to200 ? " 48→200 upgrade applied." : "";
-  const convertNote = state.convert50to20 ? " 50→20 step conversion applied." : "";
-  const resetNote = state.resetClosures && joined.resetPlan ? ` ${formatClosureResetSummary(joined.resetPlan)}` : "";
+  const upgradeNote = options.upgrade48to200 ? " 48→200 upgrade applied." : "";
+  const convertNote = options.convert50to20 ? " 50→20 step conversion applied." : "";
+  const resetNote = options.resetClosures && joined.resetPlan ? ` ${formatClosureResetSummary(joined.resetPlan)}` : "";
   const names = selected.map((show) => show.name);
   const verifyText = verify ? ` ${formatJoinVerifySummary(verify, names)}` : "";
   const alignNote = audioNote ? ` ${audioNote}` : "";
@@ -804,14 +836,14 @@ async function joinAndDownload() {
   const steps = new Set(selected.map((show) => effectiveStepTime(show.header.stepTime, options)));
   const channels = new Set(selected.map((show) => show.header.channelCount));
   const mixedChannels = channels.size > 1;
-  if (steps.size > 1 || (mixedChannels && !state.upgrade48to200)) {
+  if (steps.size > 1 || (mixedChannels && !options.upgrade48to200)) {
     setJoinStatus(
       "Included shows must share the same step time (or enable 50→20 conversion), and the same channel count unless 48→200 upgrade is on.",
       "err"
     );
     return;
   }
-  if (mixedChannels && state.upgrade48to200) {
+  if (mixedChannels && options.upgrade48to200) {
     const allowed = [...channels].every((count) => count === 48 || count === 200);
     if (!allowed) {
       setJoinStatus("48→200 upgrade only applies to 48-channel and 200-channel shows.", "err");
@@ -830,7 +862,13 @@ async function joinAndDownload() {
     for (const show of selected) {
       buffers.push(await show.file.arrayBuffer());
     }
-    const joinOpts = { ...joinOptions(), showNames: selected.map((show) => show.name) };
+    const plans = selected.map((show) => alignPlanFor(show, options));
+    const keepFrameCounts = plans.map((plan) => plan?.keepFrameCount);
+    const joinOpts = {
+      ...options,
+      showNames: selected.map((show) => show.name),
+      keepFrameCounts,
+    };
     const joined = joinFseqBuffers(buffers, joinOpts);
     const validation = validateFseq(joined.buffer);
     const verify = validateJoinedSegments(joined.buffer, buffers, joinOpts);
@@ -842,15 +880,18 @@ async function joinAndDownload() {
     els.joinBtn.textContent = "Joining…";
 
     const alignDeltas = selected.map((show, index) => {
-      const fseqMs = joinDurationMs(show.header, joinOpts);
+      const fseqMs = joinDurationMs(show.header, { ...joinOpts, keepFrameCount: keepFrameCounts[index] });
       const tailMs = joined.resetPlan?.tails[index]?.durationMs || 0;
       return audioAlignDeltaMs(show.audioDurationMs, fseqMs + tailMs);
     });
-    const audioNote = summarizeAudioAlign(alignDeltas);
-    const summary = fseqSummary(selected, joined, validation, verify, audioNote);
+    const audioNote = summarizeAudioAlign(alignDeltas, {
+      idleTrimmed: plans.filter((plan) => plan?.action === "trim").length,
+      activeTails: plans.filter((plan) => plan?.action === "active").length,
+    });
+    const summary = fseqSummary(selected, joined, validation, verify, audioNote, options);
 
     const targetDurationsSec = selected.map((show, index) => {
-      const fseqMs = joinDurationMs(show.header, joinOpts);
+      const fseqMs = joinDurationMs(show.header, { ...joinOpts, keepFrameCount: keepFrameCounts[index] });
       const tailMs = joined.resetPlan?.tails[index]?.durationMs || 0;
       return (fseqMs + tailMs) / 1000;
     });
@@ -946,6 +987,17 @@ function loadSamples() {
       createSampleFseq({ frameCount: 50, fill: 0, channelValues: { 41: 64 } })
     ),
     fileFrom("trunk-left-open.wav", wav, "audio/wav"),
+    fileFrom(
+      "idle-tail.fseq",
+      createSampleFseq({
+        frameCount: 350,
+        fill: 0,
+        frameFill: (i) => (i < 200 ? 18 : 0),
+      })
+    ),
+    fileFrom("idle-tail.wav", wav, "audio/wav"),
+    fileFrom("active-tail.fseq", createSampleFseq({ frameCount: 350, fill: 21 })),
+    fileFrom("active-tail.wav", wav, "audio/wav"),
     fileFrom("lonely-track.wav", wav, "audio/wav"),
   ];
   ingestFiles(files, { replace: true });
