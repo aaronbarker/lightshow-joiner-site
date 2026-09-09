@@ -19,19 +19,16 @@
           <h1>Tesla Lightshow Joiner</h1>
           <p class="lede">
             Drop a folder of shows (or pick <code>.fseq</code> plus matching
-            <code>.mp3</code>/<code>.wav</code> files). Scan them like the Python CLI,
-            sort the table, then join compatible uncompressed V2 sequences.
+            <code>.mp3</code>/<code>.wav</code> files). The site scans them and displays a table with info about each one.
           </p>
         </div>
         <nav class="links">
-          <a href="https://github.com/aaronbarker/lightshow-joiner">Python CLI</a>
           <a href="https://github.com/aaronbarker/lightshow-joiner-site">Site repo</a>
         </nav>
       </header>
 
       <p class="privacy">
-        Files stay in this browser tab. There is no upload server — GitHub Pages
-        only hosts these static files.
+        Files and processing all happen in this browser tab. There is no upload server.
       </p>
 
       <section
@@ -165,9 +162,14 @@
       </section>
 
       <footer>
-        Companion to
-        <a href="https://github.com/aaronbarker/lightshow-joiner">aaronbarker/lightshow-joiner</a>.
-        Default include set is 48 channels / 20&nbsp;ms with a matching audio file.
+        <p>About - This is a vibe coded AI project. I had a few Teslas at Halloween Trunk or Treat
+          to do a lightshow and got really annoyed at having to re-setup everything every minute or two for short shows. 
+          I figured there must be a way to combined fseq files and AI said it could so this came to pass.</p>
+
+        <p>Disclaimer - This is far from perfect, but seems to do the job in my testing. No files are uploaded, everything happens on your browser. 
+          There is a potential for things getting out of sync the longer you go.</p>
+        
+        <p>Default include set is 48 channels / 20&nbsp;ms with a matching audio file.
         50&nbsp;ms shows stay skipped unless <strong>Convert 50ms → 20ms</strong>
         (experimental) is on. 200-channel / 20ms shows join the default set only
         when <strong>Upgrade 48ch → 200ch</strong> is on. Audio is padded or trimmed
@@ -175,7 +177,7 @@
         the song is trimmed instead. Optional closure reset injects
         one defaults pose (trunk/charge closed, windows/mirrors open) at the
         latest point that still fits Tesla’s per-USB-show limits. Validation follows Tesla’s
-        <code>validator.py</code> checks.
+        <code>validator.py</code> checks.</p>
       </footer>
     </main>
     <script type="module" src="./js/app.js?v=20260908-nameopts"></script>
