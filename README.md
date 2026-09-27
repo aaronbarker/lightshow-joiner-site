@@ -63,7 +63,7 @@ Notes:
 | 50 ms step time  | Skip, unless **Convert 50ms → 20ms** is on |
 | 200 channels, 20 ms | Skip, unless **Upgrade 48ch → 200ch** is on |
 
-Join still requires matching step time across the checked rows, or enable **Convert 50ms → 20ms** (experimental) near the join button. That option expands 50 ms frames onto a 20 ms grid so wall-clock duration stays matched to the audio: every two original frames (100 ms) become five 20 ms frames (for example `A,A,A,B,B`). It does **not** only rewrite the header `step_time`, and it does **not** convert 20 ms → 50 ms. Lights may look slightly less tight to the beat, with possible ~10 ms local stutter — not runaway drift if duration is preserved.
+Join still requires matching step time across the checked rows, or enable **Convert 50ms → 20ms** (experimental) above the show table. That option expands 50 ms frames onto a 20 ms grid so wall-clock duration stays matched to the audio: every two original frames (100 ms) become five 20 ms frames (for example `A,A,A,B,B`). It does **not** only rewrite the header `step_time`, and it does **not** convert 20 ms → 50 ms. Lights may look slightly less tight to the beat, with possible ~10 ms local stutter — not runaway drift if duration is preserved.
 
 Channel counts must match, or enable **Upgrade 48ch → 200ch**. That option expands each 48-channel frame to 200 channels by padding unused channels with zeros and updates the FSEQ header channel count to 200. The two options can be combined (a 48ch / 50ms show becomes 200ch / 20ms).
 

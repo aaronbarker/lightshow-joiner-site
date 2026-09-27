@@ -9,7 +9,7 @@
       content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260908-idle2" />
+    <link rel="stylesheet" href="./styles.css?v=20260927-optstop" />
   </head>
   <body>
     <main class="app">
@@ -68,6 +68,70 @@
           </div>
         </div>
 
+        <div class="join-options">
+          <div class="join-option">
+            <div class="join-option-head">
+              <label class="toggle" for="upgrade-48-to-200">
+                <input id="upgrade-48-to-200" type="checkbox" />
+                <strong>Upgrade 48ch → 200ch</strong>
+              </label>
+              <button
+                type="button"
+                class="option-help-btn"
+                aria-expanded="false"
+                aria-controls="help-upgrade-48-to-200"
+                aria-label="About Upgrade 48ch → 200ch"
+              >?</button>
+            </div>
+            <p id="help-upgrade-48-to-200" class="option-help" hidden>
+              Pad unused channels with zeros so 48-channel / 20ms shows can join 200-channel / 20ms shows. Does not convert 20ms ↔ 50ms.
+            </p>
+          </div>
+          <div class="join-option">
+            <div class="join-option-head">
+              <label class="toggle" for="convert-50-to-20">
+                <input id="convert-50-to-20" type="checkbox" />
+                <strong>Convert 50ms → 20ms</strong>
+              </label>
+              <button
+                type="button"
+                class="option-help-btn"
+                aria-expanded="false"
+                aria-controls="help-convert-50-to-20"
+                aria-label="About Convert 50ms → 20ms"
+              >?</button>
+            </div>
+            <p id="help-convert-50-to-20" class="option-help" hidden>
+              Experimental. Expands frames so wall-clock duration stays matched to the audio (every 2×50ms frames become 5×20ms). Does not convert 20ms → 50ms.
+            </p>
+          </div>
+          <div class="join-option">
+            <div class="join-option-head">
+              <label class="toggle" for="reset-closures">
+                <input id="reset-closures" type="checkbox" checked />
+                <strong>Reset closures between shows</strong>
+              </label>
+              <button
+                type="button"
+                class="option-help-btn"
+                aria-expanded="false"
+                aria-controls="help-reset-closures"
+                aria-label="About Reset closures between shows"
+              >?</button>
+            </div>
+            <p id="help-reset-closures" class="option-help" hidden>
+              Count Open/Close/Dance in the included shows, then inject one defaults reset (trunk/charge closed, windows/mirrors open) after the last show that still fits Tesla’s per-USB-show limits. If even that one reset would be ignored, it is skipped and a warning is shown.
+            </p>
+          </div>
+        </div>
+        <p id="step-convert-warning" class="step-convert-warning" hidden>
+          <strong>Experimental 50ms → 20ms:</strong>
+          Total length stays matched to the audio. Lights may look slightly less
+          tight to the beat, and local timing can stutter on a ~10&nbsp;ms scale.
+          That is not runaway drift if duration is preserved.
+        </p>
+        <p id="closure-reset-warning" class="step-convert-warning" hidden></p>
+
         <div class="table-wrap">
           <table>
             <thead>
@@ -85,37 +149,6 @@
             <tbody id="show-rows"></tbody>
           </table>
         </div>
-
-        <div class="join-options">
-          <label class="toggle" for="upgrade-48-to-200">
-            <input id="upgrade-48-to-200" type="checkbox" />
-            <span>
-              <strong>Upgrade 48ch → 200ch</strong>
-              <small>Pad unused channels with zeros so 48-channel / 20ms shows can join 200-channel / 20ms shows. Does not convert 20ms ↔ 50ms.</small>
-            </span>
-          </label>
-          <label class="toggle" for="convert-50-to-20">
-            <input id="convert-50-to-20" type="checkbox" />
-            <span>
-              <strong>Convert 50ms → 20ms</strong>
-              <small>Experimental. Expands frames so wall-clock duration stays matched to the audio (every 2×50ms frames become 5×20ms). Does not convert 20ms → 50ms.</small>
-            </span>
-          </label>
-          <label class="toggle" for="reset-closures">
-            <input id="reset-closures" type="checkbox" checked />
-            <span>
-              <strong>Reset closures between shows</strong>
-              <small>Count Open/Close/Dance in the included shows, then inject one defaults reset (trunk/charge closed, windows/mirrors open) after the last show that still fits Tesla’s per-USB-show limits. If even that one reset would be ignored, it is skipped and a warning is shown.</small>
-            </span>
-          </label>
-        </div>
-        <p id="step-convert-warning" class="step-convert-warning" hidden>
-          <strong>Experimental 50ms → 20ms:</strong>
-          Total length stays matched to the audio. Lights may look slightly less
-          tight to the beat, and local timing can stutter on a ~10&nbsp;ms scale.
-          That is not runaway drift if duration is preserved.
-        </p>
-        <p id="closure-reset-warning" class="step-convert-warning" hidden></p>
 
         <div class="join-box">
           <p class="combined-time" id="combined-time">
@@ -186,6 +219,6 @@
         <code>validator.py</code> checks.</p>
       </footer>
     </main>
-    <script type="module" src="./js/app.js?v=20260908-nameopts"></script>
+    <script type="module" src="./js/app.js?v=20260927-optstop"></script>
   </body>
 </html>

@@ -110,6 +110,18 @@ function syncJoinOptionInputs() {
   if (els.resetClosures) els.resetClosures.checked = state.resetClosures;
 }
 
+function bindOptionHelpButtons() {
+  for (const button of document.querySelectorAll(".option-help-btn")) {
+    button.addEventListener("click", () => {
+      const panel = document.getElementById(button.getAttribute("aria-controls") || "");
+      if (!panel) return;
+      const open = button.getAttribute("aria-expanded") !== "true";
+      button.setAttribute("aria-expanded", open ? "true" : "false");
+      panel.hidden = !open;
+    });
+  }
+}
+
 function fileKey(file) {
   return (file.webkitRelativePath || file.name).replaceAll("\\", "/");
 }
@@ -1088,6 +1100,7 @@ els.resetClosures?.addEventListener("change", () => {
   applyJoinOptionChange();
 });
 syncJoinOptionInputs();
+bindOptionHelpButtons();
 els.joinBtn.addEventListener("click", joinAndDownload);
 
 els.dropzone.addEventListener("click", (event) => {
