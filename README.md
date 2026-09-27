@@ -9,7 +9,7 @@ The Python CLI stays in its own repo. This site does not modify that project.
 ## Use it
 
 1. Open the site (local preview or GitHub Pages).
-2. Drag a lightshow folder onto the drop zone, or use **Choose files** / **Choose folder**. Folder pick needs a browser that supports `webkitdirectory` (desktop Chrome and Safari do).
+2. Drag a lightshow folder or files onto the drop zone, or use **Choose files**. Dropping a folder still walks its contents in browsers that expose directory entries on the drop.
 3. Review the table: name (the `.fseq` extension is hidden; hover for the real path), play/pause plus a scrubber when a row has audio, channels, step time, duration (`m:ss`), audio match (`mp3` / `wav` / `missing`), and compatibility. When a track is meaningfully longer or shorter than the FSEQ, a pad/trim note appears under Compatibility. If the FSEQ runs past the audio with an idle (all-zero) tail, that note says the tail will be trimmed; an active tail warns and keeps today’s audio pad. Tesla validator still runs; a failed source shows a **Validator failed** badge under the title. After **Join & download**, each included row also gets a **Join verified** or **Join mismatch** badge — the joined FSEQ is compared segment-by-segment to that show’s frames (after the same 48→200 / 50→20 transforms; reset tails are skipped in the compare).
 4. Compatible shows default to **include** (48 channels + 20 ms, with matching audio). **50 ms** shows stay skipped unless you turn on experimental **Convert 50ms → 20ms**. **200-channel** shows stay skipped unless you turn on **Upgrade 48ch → 200ch**. The **Upgrade / Convert / Reset closures** checkboxes are remembered in a first-party cookie (`lsj-join-options`) so a later visit restores them. Missing or blocked cookies fall back to the same defaults as a first visit (upgrade and convert off, reset on).
 5. Missing pairs (`.fseq` without audio, or audio without `.fseq`) are shown as **red error rows** with the include checkbox disabled. Incompatible shows (wrong step time, channel mismatch vs the current join target, compressed/invalid) also have the checkbox locked.
@@ -19,8 +19,6 @@ The Python CLI stays in its own repo. This site does not modify that project.
 9. **Reset closures between shows** (on by default) counts Open/Close/Dance on the closure channels, then injects **one** defaults reset (trunk/charge **closed**, windows/mirrors **open**) after the last included show that still has Tesla command budget. It does not reset after every track. If even that one extra command would be ignored, the inject is skipped. The options area shows per-type counts vs limits (e.g. `Liftgate: 8/6 commands — vehicle will ignore extras`). Idle/Stop do not count. Limits per joined USB show: liftgate 6, each window 6, each mirror 20, charge port 3.
 
 The first audio join downloads the ffmpeg.wasm engine (~32 MB from jsDelivr) and caches it in this browser. Later joins reuse that cache. Nothing is uploaded.
-
-**Load sample shows** builds synthetic PSEQ files in memory so you can try the table and join without Tesla files.
 
 ## Local preview
 

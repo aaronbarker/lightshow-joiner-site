@@ -2,8 +2,6 @@ import {
   parseFseqHeader,
   validateFseq,
   joinFseqBuffers,
-  createSampleFseq,
-  createSilentWav,
   formatDuration,
   formatDurationWords,
   totalIncludedDurationMs,
@@ -72,10 +70,7 @@ const state = {
 const els = {
   dropzone: document.getElementById("dropzone"),
   fileInput: document.getElementById("file-input"),
-  folderInput: document.getElementById("folder-input"),
   pickFiles: document.getElementById("pick-files"),
-  pickFolder: document.getElementById("pick-folder"),
-  loadSamples: document.getElementById("load-samples"),
   results: document.getElementById("results"),
   stats: document.getElementById("stats"),
   rows: document.getElementById("show-rows"),
@@ -196,17 +191,11 @@ function pairAudio(showPath, audioFiles) {
   return { kind: "missing", file: null };
 }
 
-async function ingestFiles(fileList, { replace = false } = {}) {
+async function ingestFiles(fileList) {
   const files = [...fileList].filter(isAccepted);
   if (!files.length) {
     setJoinStatus("No .fseq / .mp3 / .wav files found in that drop.", "warn");
     return;
-  }
-
-  if (replace) {
-    stopPreview();
-    state.shows = [];
-    state.audioByKey.clear();
   }
 
   const audioFiles = files.filter((file) => extensionOf(file.name) !== "fseq");
@@ -964,79 +953,6 @@ async function joinAndDownload() {
   }
 }
 
-function loadSamples() {
-  const wav = createSilentWav({ durationSec: 4 });
-  const files = [
-    fileFrom("halloween-intro.fseq", createSampleFseq({ frameCount: 100, fill: 11 })),
-    fileFrom("halloween-intro.wav", wav, "audio/wav"),
-    fileFrom("pumpkin-dance.fseq", createSampleFseq({ frameCount: 150, fill: 22 })),
-    fileFrom("pumpkin-dance.wav", wav, "audio/wav"),
-    fileFrom("finale.fseq", createSampleFseq({ frameCount: 80, fill: 33 })),
-    fileFrom(
-      "slow-show.fseq",
-      createSampleFseq({
-        frameCount: 40,
-        stepTime: 50,
-        frameFill: (i) => {
-          // Mix of odd-index (late) and even-index (on-grid) visual changes → 3/11.
-          if (i >= 36) return 12;
-          if (i >= 32) return 11;
-          if (i >= 28) return 10;
-          if (i >= 24) return 9;
-          if (i >= 20) return 8;
-          if (i >= 16) return 7;
-          if (i >= 9) return 6;
-          if (i >= 8) return 5;
-          if (i >= 3) return 4;
-          if (i >= 2) return 3;
-          if (i >= 1) return 2;
-          return 1;
-        },
-      })
-    ),
-    fileFrom("slow-show.wav", wav, "audio/wav"),
-    fileFrom("still-glow.fseq", createSampleFseq({ frameCount: 24, stepTime: 50, fill: 66 })),
-    fileFrom("still-glow.wav", wav, "audio/wav"),
-    fileFrom("cybertruck-wide.fseq", createSampleFseq({ frameCount: 60, channelCount: 200, fill: 55 })),
-    fileFrom("cybertruck-wide.wav", wav, "audio/wav"),
-    fileFrom(
-      "liftgate-busy.fseq",
-      createSampleFseq({
-        frameCount: 10,
-        fill: 0,
-        channelValues: { 41: (i) => (i % 2 === 0 ? 64 : 0) },
-      })
-    ),
-    fileFrom("liftgate-busy.wav", wav, "audio/wav"),
-    fileFrom(
-      "trunk-left-open.fseq",
-      createSampleFseq({ frameCount: 50, fill: 0, channelValues: { 41: 64 } })
-    ),
-    fileFrom("trunk-left-open.wav", wav, "audio/wav"),
-    fileFrom(
-      "idle-tail.fseq",
-      createSampleFseq({
-        frameCount: 350,
-        fill: 0,
-        frameFill: (i) => (i < 200 ? 18 : 0),
-      })
-    ),
-    fileFrom("idle-tail.wav", wav, "audio/wav"),
-    fileFrom("active-tail.fseq", createSampleFseq({ frameCount: 350, fill: 21 })),
-    fileFrom("active-tail.wav", wav, "audio/wav"),
-    fileFrom("lonely-track.wav", wav, "audio/wav"),
-  ];
-  ingestFiles(files, { replace: true });
-  setJoinStatus(
-    "Loaded in-browser sample shows (synthetic PSEQ bytes). Compatible 48ch / 20ms rows with audio are checked. Missing-pair rows are red and locked; 50ms rows stay skipped unless you turn on experimental 50→20 conversion; 200ch rows stay skipped unless 48→200 upgrade is on.",
-    "info"
-  );
-}
-
-function fileFrom(name, buffer, type = "application/octet-stream") {
-  return new File([buffer], name, { type });
-}
-
 function clearShows() {
   stopPreview();
   state.shows = [];
@@ -1050,21 +966,9 @@ els.pickFiles.addEventListener("click", (event) => {
   event.stopPropagation();
   els.fileInput.click();
 });
-els.pickFolder.addEventListener("click", (event) => {
-  event.stopPropagation();
-  els.folderInput.click();
-});
-els.loadSamples.addEventListener("click", (event) => {
-  event.stopPropagation();
-  loadSamples();
-});
 els.fileInput.addEventListener("change", () => {
   ingestFiles(els.fileInput.files);
   els.fileInput.value = "";
-});
-els.folderInput.addEventListener("change", () => {
-  ingestFiles(els.folderInput.files);
-  els.folderInput.value = "";
 });
 els.clearShows.addEventListener("click", clearShows);
 els.selectCompatible.addEventListener("click", () => {

@@ -84,13 +84,6 @@ h1 {
   color: var(--muted);
 }
 
-.links {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.links a,
 .btn,
 .drop-actions button {
   appearance: none;
@@ -105,7 +98,6 @@ h1 {
   cursor: pointer;
 }
 
-.links a:hover,
 .btn:hover,
 .drop-actions button:hover {
   border-color: #3d4453;
@@ -724,7 +716,7 @@ input[type="text"] {
 input[type="text"]:focus,
 .btn:focus-visible,
 .drop:focus-visible,
-.links a:focus-visible,
+footer a:focus-visible,
 th.sortable:focus-visible,
 .preview-play:focus-visible,
 .preview-scrubber:focus-visible,
@@ -806,6 +798,15 @@ footer {
 
 footer a {
   color: var(--muted);
+}
+
+.site-repo {
+  margin: 22px 0 0;
+}
+
+.site-repo a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 @media (max-width: 720px) {

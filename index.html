@@ -9,7 +9,7 @@
       content="Join Tesla lightshow FSEQ files in your browser. Nothing is uploaded."
     />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="./styles.css?v=20260927-optstop" />
+    <link rel="stylesheet" href="./styles.css?v=20260927-picker" />
   </head>
   <body>
     <main class="app">
@@ -22,9 +22,6 @@
             <code>.mp3</code>/<code>.wav</code> files). The site scans them and displays a table with info about each one.
           </p>
         </div>
-        <nav class="links">
-          <a href="https://github.com/aaronbarker/lightshow-joiner-site">Site repo</a>
-        </nav>
       </header>
 
       <p class="privacy">
@@ -41,12 +38,10 @@
         <p class="drop-title">Drop a folder or lightshow files</p>
         <p class="drop-hint">
           Accepts <strong>.fseq</strong> plus audio with the same basename.
-          Folder pick uses <code>webkitdirectory</code> where the browser supports it.
+          Drop a folder or several files, or choose files below.
         </p>
         <div class="drop-actions">
           <button type="button" id="pick-files">Choose files</button>
-          <button type="button" id="pick-folder">Choose folder</button>
-          <button type="button" id="load-samples">Load sample shows</button>
         </div>
       </section>
 
@@ -57,8 +52,6 @@
         multiple
         accept=".fseq,.mp3,.wav,audio/mpeg,audio/wav"
       />
-      <input id="folder-input" class="hidden-input" type="file" webkitdirectory multiple />
-
       <section id="results" class="panel" aria-live="polite">
         <div class="toolbar">
           <div id="stats" class="stats"></div>
@@ -217,8 +210,9 @@
         one defaults pose (trunk/charge closed, windows/mirrors open) at the
         latest point that still fits Tesla’s per-USB-show limits. Validation follows Tesla’s
         <code>validator.py</code> checks.</p>
+        <p class="site-repo"><a href="https://github.com/aaronbarker/lightshow-joiner-site">Site repo</a></p>
       </footer>
     </main>
-    <script type="module" src="./js/app.js?v=20260927-optstop"></script>
+    <script type="module" src="./js/app.js?v=20260927-picker"></script>
   </body>
 </html>
